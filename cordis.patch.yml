@@ -1,0 +1,12 @@
+# user-management bundle patch: contributes the plugin row into the
+# host composition when this package is installed via `dsh plugin add`.
+#
+# The plugin is HOST-PLANE: it registers HTTP routes (login page + API) on
+# the webServer service, installs a global auth gate over the shared
+# node:http server, and serves a settings-page management UI from its
+# client half. It must land in the host composition (this insert), never
+# inside an agent preset.
+
+- insert:
+    - id: user-management
+      name: '@weibaohui/user-management'
