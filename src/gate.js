@@ -40,6 +40,18 @@ function isDocumentRequest(method, acceptHeader) {
   return accept.includes('text/html')
 }
 
+const STATIC_SUFFIX_RE = /\.(?:js|mjs|css|map|woff2?|ttf|otf|png|jpe?g|gif|svg|ico|webp|avif|mp4|webmanifest|txt)$/i
+
+/** Static asset (bundle files, fonts, images) — never audit-logged. */
+function isStaticAsset(path) {
+  return STATIC_SUFFIX_RE.test(String(path || ''))
+}
+
+/** API-ish request worth auditing: neither a page navigation nor an asset. */
+function isAuditableRequest(method, acceptHeader, path) {
+  return !isDocumentRequest(method, acceptHeader) && !isStaticAsset(path)
+}
+
 function parseCookies(header) {
   const out = {}
   const raw = String(header || '')
@@ -72,8 +84,11 @@ function gateDecision({ method, path, accept, sessionValid }) {
 
 /**
  * Decide from a live request. `resolveSession(req)` → truthy when the
- * request carries a valid session; `onAccess(req)` fires for document
- * navigations that pass the gate (the "access ledger").
+ * request carries a valid session. Two audit hooks:
+ * - `onAccess(req, session, path)` fires for document navigations that pass
+ *   the gate (the "access ledger");
+ * - allow decisions carry `{ session, path }` so attachGate can record the
+ *   operation audit (API/WebSocket) once the response completes.
  */
 function createDecider({ resolveSession, onAccess }) {
   return async function decide(req) {
@@ -83,16 +98,21 @@ function createDecider({ resolveSession, onAccess }) {
     } catch {
       return { action: 'unauthorized' }
     }
+    const method = (req.method || 'GET').toUpperCase()
     const cookies = parseCookies(req.headers && req.headers.cookie)
     const resolved = await resolveSession(cookies[SESSION_COOKIE])
     const decision = gateDecision({
-      method: (req.method || 'GET').toUpperCase(),
+      method,
       path: url.pathname,
       accept: req.headers && req.headers.accept,
       sessionValid: !!resolved,
     })
-    if (decision.action === 'allow' && onAccess && isDocumentRequest((req.method || 'GET').toUpperCase(), req.headers && req.headers.accept) && !isPublicPath(url.pathname)) {
-      try { onAccess(req, resolved) } catch { /* ledger must never break the gate */ }
+    if (decision.action === 'allow') {
+      decision.session = resolved
+      decision.path = url.pathname
+      if (onAccess && isDocumentRequest(method, req.headers && req.headers.accept) && !isPublicPath(url.pathname)) {
+        try { onAccess(req, resolved, url.pathname) } catch { /* ledger must never break the gate */ }
+      }
     }
     return decision
   }
@@ -114,9 +134,12 @@ function denySocket(socket) {
 
 /**
  * Install the gate over a live node:http Server by re-ordering listeners.
- * Returns a disposer restoring the original wiring.
+ * `hooks.onApiRequest(req, session, path, status)` fires once the response
+ * of an auditable (non-document, non-asset) request completes;
+ * `hooks.onWsOpen(req, session, path)` fires when a WebSocket upgrade
+ * passes the gate. Returns a disposer restoring the original wiring.
  */
-function attachGate(server, decider) {
+function attachGate(server, decider, hooks = {}) {
   const requestListeners = server.listeners('request').slice()
   server.removeAllListeners('request')
   const requestGate = (req, res) => {
@@ -124,6 +147,11 @@ function attachGate(server, decider) {
       .then(() => decider(req))
       .then((decision) => {
         if (decision.action === 'allow') {
+          if (typeof hooks.onApiRequest === 'function' && isAuditableRequest((req.method || 'GET').toUpperCase(), req.headers && req.headers.accept, decision.path)) {
+            res.on('finish', () => {
+              try { hooks.onApiRequest(req, decision.session, decision.path, res.statusCode) } catch { /* audit must never break the gate */ }
+            })
+          }
           for (const listener of requestListeners) listener.call(server, req, res)
           return
         }
@@ -150,6 +178,9 @@ function attachGate(server, decider) {
         .then(() => decider(req))
         .then((decision) => {
           if (decision.action === 'allow') {
+            if (typeof hooks.onWsOpen === 'function') {
+              try { hooks.onWsOpen(req, decision.session, decision.path) } catch { /* audit must never break the gate */ }
+            }
             for (const listener of upgradeListeners) listener.call(server, req, socket, head)
             return
           }
@@ -176,9 +207,9 @@ function attachGate(server, decider) {
  * Degraded gate for hosts where the server instance is unreachable: a
  * prefix-`/` route wrapping the (captured) fallback handler. Known blind
  * spots — `/api` and `/plugins` prefixes outrank `/` and are NOT covered
- * (documented in README).
+ * (documented in README). Audit hooks behave like the hard gate.
  */
-function installFallbackGate(webServer, decider) {
+function installFallbackGate(webServer, decider, hooks = {}) {
   const inner = typeof webServer.fallback === 'function' ? webServer.fallback : null
   webServer.register({
     kind: 'prefix',
@@ -187,6 +218,11 @@ function installFallbackGate(webServer, decider) {
       let decision
       try { decision = await decider(req) } catch { decision = { action: 'unauthorized' } }
       if (decision.action === 'allow') {
+        if (typeof hooks.onApiRequest === 'function' && isAuditableRequest((req.method || 'GET').toUpperCase(), req.headers && req.headers.accept, decision.path)) {
+          res.on('finish', () => {
+            try { hooks.onApiRequest(req, decision.session, decision.path, res.statusCode) } catch { /* audit must never break the gate */ }
+          })
+        }
         if (inner) return inner(req, res)
         res.writeHead(404)
         res.end()
@@ -208,15 +244,15 @@ function installFallbackGate(webServer, decider) {
  * server instance is not reachable (host upgrades may change internals).
  * Returns { mode, dispose }.
  */
-function installGate(webServer, decider) {
+function installGate(webServer, decider, hooks = {}) {
   const server = webServer && webServer.server
   if (server && typeof server.listeners === 'function' && typeof server.addListener === 'function') {
     try {
-      const dispose = attachGate(server, decider)
+      const dispose = attachGate(server, decider, hooks)
       return { mode: 'server', dispose }
     } catch { /* fall through to degraded mode */ }
   }
-  return { mode: 'fallback', dispose: installFallbackGate(webServer, decider) }
+  return { mode: 'fallback', dispose: installFallbackGate(webServer, decider, hooks) }
 }
 
 module.exports = {
@@ -231,6 +267,8 @@ module.exports = {
   installGate,
   parseCookies,
   isDocumentRequest,
+  isStaticAsset,
+  isAuditableRequest,
   isPublicPath,
   sendUnauthorized,
 }

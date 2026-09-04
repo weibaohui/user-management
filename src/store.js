@@ -24,6 +24,7 @@ const scrypt = promisify(scryptCb)
 const USERS_FILE = 'users.json'
 const SESSIONS_FILE = 'sessions.json'
 const ACTIVITY_FILE = 'activity.jsonl'
+const AUDIT_FILE = 'audit.jsonl'
 
 /** scrypt key length / cost — modest defaults, login is not a hot path. */
 const KEY_LEN = 32
@@ -33,6 +34,9 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SESSION_RENEW_MS = SESSION_TTL_MS / 2
 /** Ledger rollover: trim to the tail once the file grows past 2× the cap. */
 const MAX_LEDGER_LINES = 2000
+/** Operation audit ledger (separate file — must not be rolled away by
+ *  security events or vice versa). Same 2× trim rule. */
+const MAX_AUDIT_LINES = 5000
 
 const USERNAME_RE = /^[a-zA-Z0-9_-]{2,32}$/
 const MIN_PASSWORD_LEN = 6
@@ -107,13 +111,15 @@ function createStore({ home, now = () => Date.now() } = {}) {
   const usersFile = join(dir, USERS_FILE)
   const sessionsFile = join(dir, SESSIONS_FILE)
   const activityFile = join(dir, ACTIVITY_FILE)
+  const auditFile = join(dir, AUDIT_FILE)
 
   /** @type {{seq:number, users:Array}} */
   let usersDoc = { seq: 0, users: [] }
   /** @type {{tokens:Object<string,{userId,username,createdAt,expiresAt}>}} */
   let sessionsDoc = { tokens: {} }
   let ledgerLines = 0
-  const writeChain = { users: Promise.resolve(), sessions: Promise.resolve(), ledger: Promise.resolve() }
+  let auditLines = 0
+  const writeChain = { users: Promise.resolve(), sessions: Promise.resolve(), ledger: Promise.resolve(), audit: Promise.resolve() }
 
   function atomicWrite(file, content) {
     return fsP.mkdir(dir, { recursive: true }).then(() => {
@@ -158,6 +164,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
       if (!sessionsDoc.tokens[token] || sessionsDoc.tokens[token].expiresAt <= ts) delete sessionsDoc.tokens[token]
     }
     try { ledgerLines = (await fsP.readFile(activityFile, 'utf8')).split('\n').filter((l) => l.trim() !== '').length } catch { ledgerLines = 0 }
+    try { auditLines = (await fsP.readFile(auditFile, 'utf8')).split('\n').filter((l) => l.trim() !== '').length } catch { auditLines = 0 }
     return { users: usersDoc.users.length, sessions: Object.keys(sessionsDoc.tokens).length }
   }
 
@@ -319,7 +326,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     if (dropped) await persistSessions()
   }
 
-  // ── activity ledger ──────────────────────────────────────────────────────
+  // ── activity + audit ledgers ─────────────────────────────────────────────
 
   function ledgerLine(entry) {
     return JSON.stringify({
@@ -332,22 +339,52 @@ function createStore({ home, now = () => Date.now() } = {}) {
     })
   }
 
-  async function appendActivity(entry) {
-    const line = ledgerLine(entry) + '\n'
+  /** Serialized append to a JSONL ledger with 2×-cap tail rollover. */
+  function appendJsonl({ file, line, getLines, setLines, cap }) {
     const run = writeChain.ledger
-      .then(() => fsP.appendFile(activityFile, line, { encoding: 'utf8', mode: 0o600 }))
+      .then(() => fsP.appendFile(file, line + '\n', { encoding: 'utf8', mode: 0o600 }))
       .then(async () => {
-        ledgerLines += 1
-        if (ledgerLines > MAX_LEDGER_LINES * 2) {
-          const raw = await fsP.readFile(activityFile, 'utf8')
+        setLines(getLines() + 1)
+        if (getLines() > cap * 2) {
+          const raw = await fsP.readFile(file, 'utf8')
           const lines = raw.split('\n').filter((l) => l.trim() !== '')
-          const keep = lines.slice(-MAX_LEDGER_LINES)
-          ledgerLines = keep.length
-          await atomicWrite(activityFile, keep.join('\n') + '\n')
+          const keep = lines.slice(-cap)
+          setLines(keep.length)
+          await atomicWrite(file, keep.join('\n') + '\n')
         }
       })
     writeChain.ledger = run.catch(() => {})
     return run
+  }
+
+  async function appendActivity(entry) {
+    return appendJsonl({
+      file: activityFile,
+      line: ledgerLine(entry),
+      getLines: () => ledgerLines,
+      setLines: (n) => { ledgerLines = n },
+      cap: MAX_LEDGER_LINES,
+    })
+  }
+
+  /** Operation audit: every gated API/WebSocket action of a signed-in user. */
+  async function appendAudit(entry) {
+    return appendJsonl({
+      file: auditFile,
+      line: JSON.stringify({
+        ts: now(),
+        type: entry.type || 'api',
+        username: entry.username || null,
+        userId: entry.userId || null,
+        ip: entry.ip || '',
+        method: entry.method || '',
+        path: entry.path || '',
+        status: entry.status || null,
+      }),
+      getLines: () => auditLines,
+      setLines: (n) => { auditLines = n },
+      cap: MAX_AUDIT_LINES,
+    })
   }
 
   /**
@@ -355,19 +392,41 @@ function createStore({ home, now = () => Date.now() } = {}) {
    * set of types (`types`). `limit` caps the scan window from the tail.
    */
   async function listActivity({ type, types, userId, limit = ACTIVITY_LIMIT_DEFAULT } = {}) {
+    return listJsonl(activityFile, (entry) => {
+      if (type && entry.type !== type) return false
+      if (types) {
+        const set = Array.isArray(types) ? new Set(types) : types
+        if (!set.has(entry.type)) return false
+      }
+      if (userId && entry.userId !== userId) return false
+      return true
+    }, limit)
+  }
+
+  /**
+   * Read the operation audit newest-first. Filters: username, method
+   * (exact), path substring, and a response-status class ('2'|'3'|'4'|'5').
+   */
+  async function listAudit({ username, method, path, statusClass, limit = ACTIVITY_LIMIT_DEFAULT } = {}) {
+    return listJsonl(auditFile, (entry) => {
+      if (username && entry.username !== username) return false
+      if (method && entry.method !== method) return false
+      if (path && !String(entry.path || '').includes(path)) return false
+      if (statusClass && String(entry.status || '').charAt(0) !== statusClass) return false
+      return true
+    }, limit)
+  }
+
+  async function listJsonl(file, predicate, limit) {
     let raw = ''
-    try { raw = await fsP.readFile(activityFile, 'utf8') } catch { return [] }
+    try { raw = await fsP.readFile(file, 'utf8') } catch { return [] }
     const lines = raw.split('\n').filter((l) => l.trim() !== '')
-    const cap = Math.max(1, Math.min(Number(limit) || ACTIVITY_LIMIT_DEFAULT, MAX_LEDGER_LINES))
-    const wantedTypes = Array.isArray(types) ? new Set(types) : null
+    const cap = Math.max(1, Math.min(Number(limit) || ACTIVITY_LIMIT_DEFAULT, MAX_AUDIT_LINES))
     const out = []
     for (let i = lines.length - 1; i >= 0 && out.length < cap; i -= 1) {
       let entry
       try { entry = JSON.parse(lines[i]) } catch { continue }
-      if (type && entry.type !== type) continue
-      if (wantedTypes && !wantedTypes.has(entry.type)) continue
-      if (userId && entry.userId !== userId) continue
-      out.push(entry)
+      if (predicate(entry)) out.push(entry)
     }
     return out
   }
@@ -381,10 +440,10 @@ function createStore({ home, now = () => Date.now() } = {}) {
     // sessions
     createSession, resolveSession, dropSession, dropUserSessions, pruneSessions,
     // ledger
-    appendActivity, listActivity,
+    appendActivity, listActivity, appendAudit, listAudit,
     // internals for tests
-    __files: { dir, usersFile, sessionsFile, activityFile },
-    __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines }),
+    __files: { dir, usersFile, sessionsFile, activityFile, auditFile },
+    __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines, auditLines }),
     StoreError,
   }
 }
@@ -404,6 +463,7 @@ module.exports = {
   SESSION_TTL_MS,
   SESSION_RENEW_MS,
   MAX_LEDGER_LINES,
+  MAX_AUDIT_LINES,
   USERNAME_RE,
   MIN_PASSWORD_LEN,
   ACTIVITY_LIMIT_DEFAULT,

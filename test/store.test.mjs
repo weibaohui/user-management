@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const { createStore, MAX_LEDGER_LINES, StoreError } = await import('../src/store.js')
+const { createStore, MAX_LEDGER_LINES, MAX_AUDIT_LINES, StoreError } = await import('../src/store.js')
 
 let home
 
@@ -177,6 +177,38 @@ test('state survives a reopen; expired tokens are dropped on boot', async () => 
   assert.equal(reopened.listUsers().length, 1)
   assert.ok(await reopened.resolveSession(fresh.token), 'still-valid token survives the restart')
   assert.equal(await reopened.resolveSession('expired'), null, 'expired token dropped on boot')
+})
+
+test('operation audit ledger: append + filter + independent rollover', async () => {
+  const store = makeStore()
+  await store.load()
+  await store.appendAudit({ type: 'api', username: 'alice', userId: 'u1', ip: '127.0.0.1', method: 'POST', path: '/api/sessions.create', status: 200 })
+  await store.appendAudit({ type: 'api', username: 'bob', userId: 'u2', ip: '192.168.1.5', method: 'GET', path: '/api/users.list', status: 404 })
+  await store.appendAudit({ type: 'ws', username: 'alice', userId: 'u1', ip: '127.0.0.1', method: 'WS', path: '/api/events.mux', status: null })
+  assert.equal((await store.listAudit({})).length, 3)
+  assert.equal((await store.listAudit({ username: 'alice' })).length, 2)
+  assert.equal((await store.listAudit({ method: 'POST' })).length, 1)
+  assert.equal((await store.listAudit({ path: 'events' })).length, 1)
+  const failed = await store.listAudit({ statusClass: '4' })
+  assert.equal(failed.length, 1)
+  assert.equal(failed[0].path, '/api/users.list')
+  // newest first
+  assert.equal((await store.listAudit({}))[0].type, 'ws')
+
+  // rollover touches only the audit ledger
+  const dir = join(home, 'user-management')
+  mkdirSync(dir, { recursive: true })
+  const line = JSON.stringify({ ts: 1, type: 'api', username: null, userId: null, ip: '', method: 'GET', path: '/x', status: 200 }) + '\n'
+  writeFileSync(join(dir, 'audit.jsonl'), line.repeat(MAX_AUDIT_LINES * 2 + 3))
+  const reopened = makeStore()
+  await reopened.load()
+  await reopened.appendAudit({ type: 'api', username: 'a', userId: 'u', ip: '', method: 'GET', path: '/y', status: 200 })
+  await new Promise((r) => setTimeout(r, 20))
+  const kept = readFileSync(join(dir, 'audit.jsonl'), 'utf8').split('\n').filter((l) => l.trim() !== '')
+  assert.equal(kept.length, MAX_AUDIT_LINES)
+  assert.equal(JSON.parse(kept[kept.length - 1]).path, '/y')
+  // activity ledger unaffected
+  assert.ok(!existsSync(join(dir, 'activity.jsonl')))
 })
 
 test('files are written under $DSH_HOME/user-management with 0600', async () => {

@@ -13,6 +13,8 @@ const {
   installGate,
   parseCookies,
   isDocumentRequest,
+  isStaticAsset,
+  isAuditableRequest,
   isPublicPath,
   PUBLIC_PATHS,
 } = await import('../src/gate.js')
@@ -51,6 +53,18 @@ test('parseCookies / isDocumentRequest / isPublicPath', () => {
   assert.ok(!isPublicPath('/'))
 })
 
+test('static assets are excluded from the audit, API calls are not', () => {
+  assert.ok(isStaticAsset('/plugins/@weibaohui/x/client.js'))
+  assert.ok(isStaticAsset('/assets/index-9a3f.css'))
+  assert.ok(isStaticAsset('/favicon.ico'))
+  assert.ok(!isStaticAsset('/api/sessions.create'))
+  assert.ok(!isStaticAsset('/dsh-tasks/api'))
+  assert.ok(!isAuditableRequest('GET', 'text/html', '/')) // document → access ledger instead
+  assert.ok(!isAuditableRequest('GET', '*/*', '/assets/app.js')) // asset
+  assert.ok(isAuditableRequest('POST', 'application/json', '/api/sessions.create'))
+  assert.ok(isAuditableRequest('GET', '*/*', '/dsh-tasks/api'))
+})
+
 test('attachGate: end-to-end on a real server — redirect, 401, passthrough, upgrade deny', async () => {
   const hits = []
   const server = http.createServer((req, res) => {
@@ -69,7 +83,12 @@ test('attachGate: end-to-end on a real server — redirect, 401, passthrough, up
     resolveSession: async (token) => (token === 'good' ? { user: { username: 'u' } } : null),
   })
   const accesses = []
-  const dispose = attachGate(server, decider)
+  const auditCalls = []
+  const wsCalls = []
+  const dispose = attachGate(server, decider, {
+    onApiRequest: (req, session, path, status) => auditCalls.push({ path, status, username: session && session.user.username }),
+    onWsOpen: (req, session, path) => wsCalls.push({ path, username: session && session.user.username }),
+  })
 
   // unauthenticated document → 302 /login (undici sends no Accept by default)
   const redirected = await fetch(`http://127.0.0.1:${port}/`, {
@@ -93,6 +112,23 @@ test('attachGate: end-to-end on a real server — redirect, 401, passthrough, up
   assert.equal(authed.status, 200)
   assert.equal(await authed.text(), 'inner:/whatever')
 
+  // audited: an authed API call lands in the audit hook with its status
+  const apiCall = await fetch(`http://127.0.0.1:${port}/api/sessions.create`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: 'um_session=good' },
+    body: '{}',
+  })
+  assert.equal(apiCall.status, 200)
+  await new Promise((r) => setTimeout(r, 10))
+  const apiAudit = auditCalls.find((c) => c.path === '/api/sessions.create')
+  assert.ok(apiAudit, 'API request audited')
+  assert.equal(apiAudit.status, 200)
+  assert.equal(apiAudit.username, 'u')
+  // assets are never audited
+  await fetch(`http://127.0.0.1:${port}/assets/app.js`, { headers: { cookie: 'um_session=good' } })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(auditCalls.find((c) => c.path === '/assets/app.js'), undefined, 'static asset not audited')
+
   // WebSocket upgrade without a session is denied at the socket level
   const denyResult = await new Promise((resolve) => {
     const socket = net.connect(port, '127.0.0.1')
@@ -115,6 +151,29 @@ test('attachGate: end-to-end on a real server — redirect, 401, passthrough, up
   })
   assert.equal(denyResult.upgradeHit, null, 'inner upgrade listener never called without a session')
   assert.ok(denyResult.response.includes('401'), `socket denied: ${denyResult.response}`)
+
+  // an authed WS upgrade reaches the inner listener and the audit hook
+  const wsResult = await new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.1')
+    let buf = ''
+    let timer = null
+    const finish = (result) => {
+      clearTimeout(timer)
+      socket.destroy()
+      resolve(result)
+    }
+    socket.on('data', (d) => {
+      buf += d.toString()
+      finish(buf.split('\r\n')[0])
+    })
+    socket.on('error', () => finish(buf.split('\r\n')[0] || 'destroyed'))
+    socket.on('connect', () => {
+      socket.write('GET /api/events.mux HTTP/1.1\r\nHost: x\r\nCookie: um_session=good\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+    })
+    timer = setTimeout(() => finish(buf.split('\r\n')[0] || 'timeout'), 500)
+  })
+  assert.ok(wsResult.includes('101'), `authed upgrade passes: ${wsResult}`)
+  assert.deepEqual(wsCalls, [{ path: '/api/events.mux', username: 'u' }])
 
   // dispose restores the original wiring — everything passes again
   dispose()

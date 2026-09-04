@@ -45,6 +45,15 @@ const ZH = {
   colType: '类型',
   colIp: 'IP',
   colDetail: '详情',
+  colMethod: '方法',
+  colPath: '路径',
+  colStatus: '状态',
+  tabAuditLog: '操作日志',
+  filterPath: '按路径过滤…',
+  statusAll: '全部状态',
+  statusOk: '成功 (2xx)',
+  statusErr: '失败 (4xx/5xx)',
+  typeWsConn: 'WS 连接',
   roleAdmin: '管理员',
   roleUser: '普通用户',
   you: '（我）',
@@ -100,6 +109,15 @@ const EN = {
   colType: 'Type',
   colIp: 'IP',
   colDetail: 'Detail',
+  colMethod: 'Method',
+  colPath: 'Path',
+  colStatus: 'Status',
+  tabAuditLog: 'Operation Log',
+  filterPath: 'Filter by path…',
+  statusAll: 'All statuses',
+  statusOk: 'Success (2xx)',
+  statusErr: 'Failed (4xx/5xx)',
+  typeWsConn: 'WS connection',
   roleAdmin: 'Admin',
   roleUser: 'User',
   you: ' (me)',
@@ -183,6 +201,17 @@ function filterActivity(entries, { username, type } = {}) {
   return (entries || []).filter((entry) => {
     if (username && entry.username !== username) return false
     if (type && entry.type !== type) return false
+    return true
+  })
+}
+
+/** Client-side filters for the operation audit ledger. */
+function filterAudit(entries, { username, method, path, statusClass } = {}) {
+  return (entries || []).filter((entry) => {
+    if (username && entry.username !== username) return false
+    if (method && entry.method !== method) return false
+    if (path && !String(entry.path || '').includes(path)) return false
+    if (statusClass && String(entry.status || '').charAt(0) !== statusClass) return false
     return true
   })
 }
@@ -380,6 +409,62 @@ function ActivityTab({ kind, __t: t }) {
             h('td', { className: 'um-muted' }, entry.detail || '-'))))))
 }
 
+/** Admin-only operation audit: every gated API call / WS connection with
+ *  its response status, filterable by username, method, path and status. */
+function AuditTab({ __t: t }) {
+  const [entries, setEntries] = useState(null)
+  const [username, setUsername] = useState('')
+  const [method, setMethod] = useState('')
+  const [path, setPath] = useState('')
+  const [statusClass, setStatusClass] = useState('')
+
+  const load = () => api('/audit?limit=500').then((d) => setEntries(d.entries)).catch(() => setEntries([]))
+  useEffect(() => { load() }, [])
+
+  const visible = useMemo(
+    () => filterAudit(entries, { username: username.trim() || null, method: method || null, path: path.trim() || null, statusClass: statusClass || null }),
+    [entries, username, method, path, statusClass])
+
+  const statusBadge = (status) => {
+    const cls = status >= 400 ? 'um-badge um-btn-danger' : 'um-badge'
+    return h('span', { className: cls }, status ?? '-')
+  }
+
+  return h('div', { className: 'um-card' },
+    h('div', { className: 'um-head', style: { marginBottom: 10 } },
+      h('div', { className: 'um-row' },
+        h('input', { className: 'um-input', placeholder: t('filterUser'), value: username, onChange: (e) => setUsername(e.target.value) }),
+        h('select', { className: 'um-input', value: method, onChange: (e) => setMethod(e.target.value) },
+          h('option', { value: '' }, t('filterAll')),
+          ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'WS'].map((m) => h('option', { key: m, value: m }, m))),
+        h('input', { className: 'um-input', placeholder: t('filterPath'), value: path, onChange: (e) => setPath(e.target.value) }),
+        h('select', { className: 'um-input', value: statusClass, onChange: (e) => setStatusClass(e.target.value) },
+          h('option', { value: '' }, t('statusAll')),
+          h('option', { value: '2' }, t('statusOk')),
+          h('option', { value: '4' }, t('statusErr')),
+          h('option', { value: '5' }, t('statusErr')))),
+      h('button', { className: 'um-btn', onClick: load }, t('reload'))),
+    entries === null
+      ? h('div', { className: 'um-muted' }, t('loading'))
+      : visible.length === 0
+        ? h('div', { className: 'um-muted' }, t('empty'))
+        : h('table', { className: 'um-table' },
+          h('thead', null, h('tr', null,
+            h('th', null, t('colTime')),
+            h('th', null, t('colMethod')),
+            h('th', null, t('colPath')),
+            h('th', null, t('colUser')),
+            h('th', null, t('colIp')),
+            h('th', null, t('colStatus')))),
+          h('tbody', null, visible.map((entry, i) => h('tr', { key: i },
+            h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
+            h('td', null, entry.type === 'ws' ? t('typeWsConn') : entry.method || '-'),
+            h('td', { className: 'um-muted', style: { wordBreak: 'break-all' } }, entry.path || '-'),
+            h('td', null, entry.username || '-'),
+            h('td', { className: 'um-muted' }, entry.ip || '-'),
+            h('td', null, entry.type === 'ws' ? h('span', { className: 'um-badge' }, t('typeWsConn')) : statusBadge(entry.status)))))))
+}
+
 function MyPanel({ me, __t: t, flash }) {
   const [oldPwd, setOldPwd] = useState('')
   const [newPwd, setNewPwd] = useState('')
@@ -458,11 +543,13 @@ function UserManagementSection({ __t: t }) {
 
 function AdminPanel({ me, __t: t, flash }) {
   const [tab, setTab] = useState('users')
-  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')]]
+  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')]]
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
     h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
       h('button', { key, className: tab === key ? 'um-tab active' : 'um-tab', onClick: () => setTab(key) }, label))),
-    tab === 'users' ? h(UsersTab, { me, __t: t, flash }) : h(ActivityTab, { kind: tab, __t: t }))
+    tab === 'users' ? h(UsersTab, { me, __t: t, flash })
+      : tab === 'auditLog' ? h(AuditTab, { __t: t })
+        : h(ActivityTab, { kind: tab, __t: t }))
 }
 
 // ── module wiring ─────────────────────────────────────────────────────────
@@ -476,7 +563,7 @@ module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
   __boot,
-  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity },
+  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit },
   apply(ctx) {
     ctx.locale.register(NS, 'zh', ZH)
     ctx.locale.register(NS, 'en', EN)

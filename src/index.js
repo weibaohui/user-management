@@ -43,6 +43,7 @@ const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 /** Ledger types a plain user may read about themselves. */
 const SELF_ACTIVITY_TYPES = ['login', 'login_failed', 'logout', 'password_change']
 const ADMIN_ACTIVITY_TYPES = ['login', 'login_failed', 'logout', 'password_change', 'register', 'reset_password', 'role_change', 'delete_user', 'access']
+const AUDIT_LIMIT_DEFAULT = 200
 
 function sendJson(res, status, payload, extraHeaders) {
   res.writeHead(status, Object.assign({ 'content-type': 'application/json; charset=utf-8' }, extraHeaders || {}))
@@ -204,6 +205,20 @@ async function handleApi(req, res, deps) {
     return sendJson(res, 200, { entries })
   }
 
+  if (apiPath === '/audit' && method === 'GET') {
+    const session = await authed()
+    if (!session) return sendJson(res, 401, { error: '未登录' })
+    if (session.user.role !== 'admin') return sendJson(res, 403, { error: '需要管理员权限' })
+    const entries = await store.listAudit({
+      username: url.searchParams.get('username') || undefined,
+      method: url.searchParams.get('method') || undefined,
+      path: url.searchParams.get('path') || undefined,
+      statusClass: url.searchParams.get('statusClass') || undefined,
+      limit: Number(url.searchParams.get('limit')) || AUDIT_LIMIT_DEFAULT,
+    })
+    return sendJson(res, 200, { entries })
+  }
+
   // ── admin-only user administration ───────────────────────────────────────
 
   const adminMatch = /^\/users\/([A-Za-z0-9_-]+)(?:\/(reset-password|role))?$/.exec(apiPath)
@@ -270,6 +285,7 @@ module.exports = {
     clearedCookie,
     SELF_ACTIVITY_TYPES,
     ADMIN_ACTIVITY_TYPES,
+    AUDIT_LIMIT_DEFAULT,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'
@@ -312,24 +328,39 @@ module.exports = {
 
     // Global auth gate (hard: listener re-order; degraded: prefix '/' route)
     ctx.effect(() => {
+      const auditEntry = (session, method, path, ip, status, type) => ({
+        type,
+        username: session ? session.user.username : null,
+        userId: session ? session.user.id : null,
+        ip,
+        method,
+        path,
+        status: status === undefined ? null : status,
+      })
       const decider = createDecider({
         resolveSession: async (token) => {
           await ready
           return store.resolveSession(token)
         },
-        onAccess: (req, resolved) => {
-          let detail = ''
-          try { detail = new URL(req.url || '/', 'http://dsh.local').pathname } catch {}
+        onAccess: (req, resolved, path) => {
           store.appendActivity({
             type: 'access',
             username: resolved ? resolved.user.username : null,
             userId: resolved ? resolved.user.id : null,
             ip: clientIp(req),
-            detail,
+            detail: path,
           }).catch(() => {})
         },
       })
-      const installed = installGate(ctx.webServer, decider)
+      const hooks = {
+        onApiRequest: (req, session, path, status) => {
+          store.appendAudit(auditEntry(session, (req.method || 'GET').toUpperCase(), path, clientIp(req), status, 'api')).catch(() => {})
+        },
+        onWsOpen: (req, session, path) => {
+          store.appendAudit(auditEntry(session, 'WS', path, clientIp(req), null, 'ws')).catch(() => {})
+        },
+      }
+      const installed = installGate(ctx.webServer, decider, hooks)
       if (installed.mode === 'fallback') {
         console.warn(`[${pluginName}] webServer.server unreachable — degraded to route-level gate; /api and /plugins are NOT gated`)
       }

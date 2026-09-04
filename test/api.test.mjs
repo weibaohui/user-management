@@ -9,7 +9,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { createStore } = require('../src/store.js')
-const { SESSION_COOKIE } = require('../src/gate.js')
+const { SESSION_COOKIE, createDecider, attachGate } = require('../src/gate.js')
 const plugin = require('../src/index.js')
 const { handleApi } = plugin.__internals
 
@@ -25,6 +25,21 @@ beforeEach(async () => {
       res.writeHead(500, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: String(error && error.message) }))
     })
+  })
+  // wire the same audit path production uses: gate hooks → appendAudit
+  const decider = createDecider({ resolveSession: async (token) => store.resolveSession(token) })
+  attachGate(server, decider, {
+    onApiRequest: (req, session, path, status) => {
+      store.appendAudit({
+        type: 'api',
+        username: session ? session.user.username : null,
+        userId: session ? session.user.id : null,
+        ip: '127.0.0.1',
+        method: (req.method || 'GET').toUpperCase(),
+        path,
+        status,
+      }).catch(() => {})
+    },
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   port = server.address().port
@@ -102,7 +117,7 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
   assert.equal((await call(`/users/${alice.id}/reset-password`, { method: 'POST', cookie: userCookie })).status, 403)
   assert.equal((await call(`/users/${alice.id}/role`, { method: 'POST', body: { role: 'admin' }, cookie: userCookie })).status, 403)
   assert.equal((await call(`/users/${alice.id}`, { method: 'DELETE', cookie: userCookie })).status, 403)
-  assert.equal((await call(`/users/${alice.id}`, { method: 'DELETE' })).status, 403)
+  assert.equal((await call(`/users/${alice.id}`, { method: 'DELETE' })).status, 401) // the gate denies anonymous before role checks
 
   // ── reset password: temp password works, old sessions die ──
   const oldAliceSession = await call('/login', { method: 'POST', body: { username: 'alice', password: 'secret1' } })
@@ -153,6 +168,21 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
     assert.equal(entry.userId, regC.data.user.id, 'plain users only see their own entries')
     assert.ok(['login', 'login_failed', 'logout', 'password_change'].includes(entry.type), `plain users never see ${entry.type}`)
   }
+
+  // ── audit ledger: admin-only, records gated API actions ──
+  await new Promise((r) => setTimeout(r, 50)) // let the async append chain drain
+  assert.equal((await call('/audit')).status, 401)
+  assert.equal((await call('/audit', { cookie: carolCookie })).status, 403)
+  const audit = await call('/audit?limit=500', { cookie: adminCookie })
+  assert.equal(audit.status, 200)
+  const auditedUsers = new Set(audit.data.entries.map((e) => e.path))
+  assert.ok(auditedUsers.has('/user-management/api/register'), 'register call audited')
+  assert.ok(auditedUsers.has('/user-management/api/login'), 'login call audited')
+  assert.ok(auditedUsers.has('/user-management/api/session'), 'session probe audited')
+  const resetAudit = audit.data.entries.find((e) => e.path === `/user-management/api/users/${alice.id}/reset-password`)
+  assert.ok(resetAudit && resetAudit.status === 200 && resetAudit.username === 'boss', 'reset-password audited with operator + status')
+  const filtered = await call('/audit?path=reset-password&method=POST', { cookie: adminCookie })
+  assert.ok(filtered.data.entries.every((e) => e.path.includes('reset-password') && e.method === 'POST'))
 
   // ── logout ──
   const out = await call('/logout', { method: 'POST', cookie: carolCookie })

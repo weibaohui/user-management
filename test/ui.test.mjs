@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const plugin = require('../client/index.js')
-const { NS, ZH, EN, TYPE_LABELS, formatTime, interpolate, filterActivity } = plugin.__internals
+const { NS, ZH, EN, TYPE_LABELS, formatTime, interpolate, filterActivity, filterAudit } = plugin.__internals
 
 test('client module declares slots + locale injects', () => {
   assert.equal(plugin.name, '@weibaohui/user-management') // must equal the boot manifest id
@@ -91,4 +91,20 @@ test('filterActivity narrows by username and type', () => {
   assert.equal(filterActivity(entries, { type: 'login' }).length, 2)
   assert.equal(filterActivity(entries, { username: 'alice', type: 'access' }).length, 1)
   assert.equal(filterActivity(null).length, 0)
+})
+
+test('filterAudit narrows by username/method/path/status class', () => {
+  const entries = [
+    { type: 'api', username: 'alice', method: 'POST', path: '/api/sessions.create', status: 200 },
+    { type: 'api', username: 'bob', method: 'GET', path: '/api/users.list', status: 404 },
+    { type: 'ws', username: 'alice', method: 'WS', path: '/api/events.mux', status: null },
+  ]
+  assert.equal(filterAudit(entries).length, 3)
+  assert.equal(filterAudit(entries, { username: 'alice' }).length, 2)
+  assert.equal(filterAudit(entries, { method: 'POST' }).length, 1)
+  assert.equal(filterAudit(entries, { path: 'users' }).length, 1)
+  assert.equal(filterAudit(entries, { statusClass: '2' }).length, 1)
+  assert.equal(filterAudit(entries, { statusClass: '4' }).length, 1)
+  assert.equal(filterAudit(entries, { username: 'alice', method: 'WS' }).length, 1)
+  assert.equal(filterAudit(null).length, 0)
 })
