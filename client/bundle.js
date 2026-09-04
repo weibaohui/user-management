@@ -301,11 +301,11 @@ window.__ModuleLoader__.load({
 
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById('um-styles')) return
-      const holder = document.createElement('div')
-      holder.id = 'um-styles'
-      holder.style.display = 'none'
-      holder.innerHTML = STYLE
-      document.head.appendChild(holder)
+      // Must be a real <style> element — CSS text inside a <div> never applies.
+      const el = document.createElement('style')
+      el.id = 'um-styles'
+      el.textContent = STYLE
+      document.head.appendChild(el)
     }
 
     /** Self-drawn dialog: the host Modal portals to <body> with a z-index below
@@ -412,7 +412,7 @@ window.__ModuleLoader__.load({
         title: t('actionLogout'),
         'aria-label': t('actionLogout'),
         onClick: doLogout,
-      }, PowerIcon(), withLabel ? t('actionLogout') : null)
+      }, h(PowerIcon), withLabel ? t('actionLogout') : null)
     }
 
     /** The user menu popped from the brand row: identity header, separator,
@@ -450,7 +450,7 @@ window.__ModuleLoader__.load({
               className: 'um-user-menu-item um-user-menu-logout',
               role: 'menuitem',
               onClick: () => { onClose(); doLogout() },
-            }, PowerIcon(), t('actionLogout'))),
+            }, h(PowerIcon), t('actionLogout'))),
           document.body)
         : null
     }
@@ -460,7 +460,10 @@ window.__ModuleLoader__.load({
       const [anchor, setAnchor] = useState(null)
       const toggle = (e) => {
         e.stopPropagation()
-        setAnchor((current) => (current ? null : e.currentTarget))
+        // React nulls e.currentTarget after dispatch; the updater may run later,
+        // so capture the element first or the anchor silently stays null.
+        const target = e.currentTarget
+        setAnchor((current) => (current ? null : target))
       }
       const menu = (anchor && me)
         ? h(UserMenu, { anchor, username: me.username, role: me.role, onClose: () => setAnchor(null) })
