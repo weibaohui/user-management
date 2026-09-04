@@ -676,9 +676,12 @@ window.__ModuleLoader__.load({
           // Official-brand pattern: nested injects claim both brand seats, one
           // generator registers them. The mark shows in expanded row + collapsed
           // rail (fold-adaptive), the name only beside the expanded mark.
+          // priority: -1 shadows the host's default brand registration at 0
+          // ("lowest renders"); uninstalling this plugin restores the official
+          // brand with no residue.
           ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.inject('sidebar.brand.name', function* () {
-            yield ctx.slots.register({ name: 'sidebar.brand.mark' }, BrandMark)
-            yield ctx.slots.register({ name: 'sidebar.brand.name' }, BrandName)
+            yield ctx.slots.register({ name: 'sidebar.brand.mark', priority: -1 }, BrandMark)
+            yield ctx.slots.register({ name: 'sidebar.brand.name', priority: -1 }, BrandName)
           }))
         }, 'user-management: sidebar brand')
         ctx.effect(() => {
