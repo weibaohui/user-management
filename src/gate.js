@@ -84,13 +84,15 @@ function gateDecision({ method, path, accept, sessionValid }) {
 
 /**
  * Decide from a live request. `resolveSession(req)` → truthy when the
- * request carries a valid session. Two audit hooks:
+ * request carries a valid session. `isBanned(ip)` runs BEFORE any session
+ * work: a banned source IP is denied everything (403), login page included.
+ * Two audit hooks:
  * - `onAccess(req, session, path)` fires for document navigations that pass
  *   the gate (the "access ledger");
  * - allow decisions carry `{ session, path }` so attachGate can record the
  *   operation audit (API/WebSocket) once the response completes.
  */
-function createDecider({ resolveSession, onAccess }) {
+function createDecider({ resolveSession, onAccess, getClientIp, isBanned }) {
   return async function decide(req) {
     let url
     try {
@@ -99,6 +101,8 @@ function createDecider({ resolveSession, onAccess }) {
       return { action: 'unauthorized' }
     }
     const method = (req.method || 'GET').toUpperCase()
+    const ip = getClientIp ? getClientIp(req) : ''
+    if (isBanned && ip && isBanned(ip)) return { action: 'forbidden', path: url.pathname }
     const cookies = parseCookies(req.headers && req.headers.cookie)
     const resolved = await resolveSession(cookies[SESSION_COOKIE])
     const decision = gateDecision({
@@ -123,6 +127,11 @@ const SESSION_COOKIE = 'um_session'
 function sendUnauthorized(res) {
   res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({ error: 'unauthorized' }))
+}
+
+function sendForbidden(res, message) {
+  res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({ error: message || 'forbidden' }))
 }
 
 function denySocket(socket) {
@@ -158,6 +167,10 @@ function attachGate(server, decider, hooks = {}) {
         if (decision.action === 'redirect') {
           res.writeHead(302, { location: decision.location || LOGIN_PAGE_PATH })
           res.end()
+          return
+        }
+        if (decision.action === 'forbidden') {
+          sendForbidden(res)
           return
         }
         sendUnauthorized(res)
@@ -233,6 +246,10 @@ function installFallbackGate(webServer, decider, hooks = {}) {
         res.end()
         return
       }
+      if (decision.action === 'forbidden') {
+        sendForbidden(res)
+        return
+      }
       sendUnauthorized(res)
     },
   })
@@ -271,4 +288,5 @@ module.exports = {
   isAuditableRequest,
   isPublicPath,
   sendUnauthorized,
+  sendForbidden,
 }

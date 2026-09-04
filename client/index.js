@@ -93,6 +93,34 @@ const ZH = {
   auditCleared: '操作日志已清空',
   entryDeleted: '记录已删除',
   actionLogout: '退出登录',
+  createUser: '新增用户',
+  createUserTitle: '新增用户',
+  colPassword: '密码（至少 6 位）',
+  colRolePick: '角色',
+  submitCreate: '创建',
+  userCreated: '用户已创建',
+  actionDisable: '禁用',
+  actionEnable: '启用',
+  badgeDisabled: '已禁用',
+  disableConfirm: '禁用 {name}？该用户的登录会话将被立即踢出，且无法再登录。',
+  enableConfirm: '启用 {name}？该用户将可以重新登录。',
+  tabBans: 'IP 封禁',
+  banIpPlaceholder: '输入 IP 地址…',
+  banNotePlaceholder: '备注（可选）',
+  banAction: '封禁',
+  unbanAction: '解封',
+  colNote: '备注',
+  colBannedBy: '封禁者',
+  banConfirm: '封禁 {ip}？该地址将无法访问任何页面与接口。',
+  unbanConfirm: '解封 {ip}？',
+  banned: 'IP 已封禁',
+  unbanned: 'IP 已解封',
+  selfIp: '（当前）',
+  typeUserCreated: '创建用户',
+  typeUserDisabled: '禁用用户',
+  typeUserEnabled: '启用用户',
+  typeBanIp: '封禁 IP',
+  typeUnbanIp: '解封 IP',
   typeLogin: '登录',
   typeLoginFailed: '登录失败',
   typeLogout: '登出',
@@ -163,6 +191,34 @@ const EN = {
   auditCleared: 'Operation log cleared',
   entryDeleted: 'Entry deleted',
   actionLogout: 'Sign out',
+  createUser: 'New User',
+  createUserTitle: 'New User',
+  colPassword: 'Password (min 6 chars)',
+  colRolePick: 'Role',
+  submitCreate: 'Create',
+  userCreated: 'User created',
+  actionDisable: 'Disable',
+  actionEnable: 'Enable',
+  badgeDisabled: 'Disabled',
+  disableConfirm: 'Disable {name}? Their sessions are signed out immediately and they can no longer sign in.',
+  enableConfirm: 'Enable {name}? They will be able to sign in again.',
+  tabBans: 'IP Bans',
+  banIpPlaceholder: 'Enter an IP address…',
+  banNotePlaceholder: 'Note (optional)',
+  banAction: 'Ban',
+  unbanAction: 'Unban',
+  colNote: 'Note',
+  colBannedBy: 'Banned by',
+  banConfirm: 'Ban {ip}? This address will be unable to reach any page or API.',
+  unbanConfirm: 'Unban {ip}?',
+  banned: 'IP banned',
+  unbanned: 'IP unbanned',
+  selfIp: ' (current)',
+  typeUserCreated: 'User created',
+  typeUserDisabled: 'User disabled',
+  typeUserEnabled: 'User enabled',
+  typeBanIp: 'IP banned',
+  typeUnbanIp: 'IP unbanned',
   typeLogin: 'Login',
   typeLoginFailed: 'Login failed',
   typeLogout: 'Logout',
@@ -186,6 +242,11 @@ const TYPE_LABELS = {
   role_change: 'typeRoleChange',
   delete_user: 'typeDeleteUser',
   access: 'typeAccess',
+  user_created: 'typeUserCreated',
+  user_disabled: 'typeUserDisabled',
+  user_enabled: 'typeUserEnabled',
+  ban_ip: 'typeBanIp',
+  unban_ip: 'typeUnbanIp',
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -473,6 +534,8 @@ function UsersTab({ me, __t: t, flash }) {
   const [temp, setTemp] = useState(null) // {name, pwd}
   const [busyId, setBusyId] = useState(null)
   const [copied, setCopied] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [form, setForm] = useState({ username: '', password: '', role: 'user' })
 
   const load = () => api('/users').then((d) => setUsers(d.users)).catch((e) => flash(t('failed') + e.message))
   useEffect(() => { load() }, [])
@@ -502,6 +565,17 @@ function UsersTab({ me, __t: t, flash }) {
     })
   }
 
+  const toggleDisabled = (user) => {
+    const disabling = !user.disabled
+    const key = disabling ? 'disableConfirm' : 'enableConfirm'
+    if (!window.confirm(interpolate(t(key), { name: user.username }))) return
+    act(user, async () => {
+      await api(`/users/${user.id}/disabled`, { method: 'POST', body: { disabled: disabling } })
+      flash(t('opOk'))
+      await load()
+    })
+  }
+
   const remove = (user) => {
     if (!window.confirm(interpolate(t('deleteConfirm'), { name: user.username }))) return
     act(user, async () => {
@@ -509,6 +583,13 @@ function UsersTab({ me, __t: t, flash }) {
       flash(t('opOk'))
       await load()
     })
+  }
+
+  const submitCreate = (e) => {
+    e.preventDefault()
+    api('/users', { method: 'POST', body: form })
+      .then(() => { setCreating(false); setForm({ username: '', password: '', role: 'user' }); flash(t('userCreated')); return load() })
+      .catch((err) => flash(t('failed') + err.message))
   }
 
   const copyTemp = () => {
@@ -522,7 +603,9 @@ function UsersTab({ me, __t: t, flash }) {
   return h('div', { className: 'um-card' },
     h('div', { className: 'um-head', style: { marginBottom: 10 } },
       h('h3', { className: 'um-title' }, interpolate(t('userCount'), { n: users.length })),
-      h('button', { className: 'um-btn', onClick: load }, t('reload'))),
+      h('div', { className: 'um-row' },
+        h('button', { className: 'um-btn um-btn-primary', onClick: () => setCreating(true) }, t('createUser')),
+        h('button', { className: 'um-btn', onClick: load }, t('reload')))),
     h('div', { className: 'um-table-wrap' },
       h('table', { className: 'um-table' },
         h('thead', null, h('tr', null,
@@ -531,9 +614,11 @@ function UsersTab({ me, __t: t, flash }) {
           h('th', null, t('colCreatedAt')),
           h('th', null, t('colLastLogin')),
           h('th', null, ''))),
-        h('tbody', null, users.map((user) => h('tr', { key: user.id },
+        h('tbody', null, users.map((user) => h('tr', { key: user.id, style: user.disabled ? { opacity: 0.55 } : undefined },
           h('td', null, user.username, user.id === me.id ? t('you') : null),
-          h('td', null, h(RoleBadge, { role: user.role, __t: t })),
+          h('td', null, h('span', { className: 'um-row', style: { gap: 4 } },
+            h(RoleBadge, { role: user.role, __t: t }),
+            user.disabled ? h('span', { className: 'um-badge um-badge-err' }, t('badgeDisabled')) : null)),
           h('td', { className: 'um-muted' }, formatTime(user.createdAt)),
           h('td', { className: 'um-muted' }, formatTime(user.lastLoginAt)),
           h('td', null, h('div', { className: 'um-row', style: { justifyContent: 'flex-end' } },
@@ -543,9 +628,31 @@ function UsersTab({ me, __t: t, flash }) {
               title: user.id === me.id ? '-' : undefined, onClick: () => changeRole(user),
             }, user.role === 'admin' ? t('actionSetUser') : t('actionSetAdmin')),
             h('button', {
+              className: disabling ? 'um-btn um-btn-danger' : 'um-btn',
+              disabled: busyId === user.id || user.id === me.id,
+              title: user.id === me.id ? '-' : undefined,
+              onClick: () => toggleDisabled(user),
+            }, user.disabled ? t('actionEnable') : t('actionDisable')),
+            h('button', {
               className: 'um-btn um-btn-danger', disabled: busyId === user.id || user.id === me.id,
               onClick: () => remove(user),
             }, t('actionDelete'))))))))),
+    creating && h(UmDialog, {
+      title: t('createUserTitle'), onClose: () => setCreating(false),
+      footer: [
+        h('button', { className: 'um-btn', onClick: () => setCreating(false) }, '✕'),
+        h('button', { className: 'um-btn um-btn-primary', onClick: submitCreate }, t('submitCreate')),
+      ],
+    },
+      h('form', { className: 'um-form', onSubmit: submitCreate },
+        h('label', { htmlFor: 'um-new-username' }, t('colUser')),
+        h('input', { id: 'um-new-username', className: 'um-input', value: form.username, onChange: (e) => setForm({ ...form, username: e.target.value }), required: true, autoFocus: true }),
+        h('label', { htmlFor: 'um-new-password' }, t('colPassword')),
+        h('input', { id: 'um-new-password', className: 'um-input', type: 'password', autoComplete: 'new-password', minLength: 6, value: form.password, onChange: (e) => setForm({ ...form, password: e.target.value }), required: true }),
+        h('label', { htmlFor: 'um-new-role' }, t('colRolePick')),
+        h('select', { id: 'um-new-role', className: 'um-input', value: form.role, onChange: (e) => setForm({ ...form, role: e.target.value }) },
+          h('option', { value: 'user' }, t('roleUser')),
+          h('option', { value: 'admin' }, t('roleAdmin'))))),
     temp && h(UmDialog, {
       title: t('tempPwdTitle'), onClose: () => setTemp(null),
       footer: [
@@ -681,6 +788,62 @@ function AuditTab({ __t: t, flash }) {
               }, t('actionDelete')))))))))
 }
 
+/** Admin-only IP bans: gate-level deny list checked before sessions —
+ *  banned addresses can't even load the login page. */
+function BansTab({ __t: t, flash }) {
+  const [bans, setBans] = useState(null)
+  const [ip, setIp] = useState('')
+  const [note, setNote] = useState('')
+  const [selfIp, setSelfIp] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () => api('/bans').then((d) => { setBans(d.bans); setSelfIp(d.selfIp) }).catch(() => setBans([]))
+  useEffect(() => { load() }, [])
+
+  const ban = (e) => {
+    e.preventDefault()
+    const target = ip.trim()
+    if (!target) return
+    if (!window.confirm(interpolate(t('banConfirm'), { ip: target }))) return
+    setBusy(true)
+    api('/bans', { method: 'POST', body: { ip: target, note: note.trim() } })
+      .then(() => { flash(t('banned')); setIp(''); setNote(''); return load() })
+      .catch((err) => flash(t('failed') + err.message))
+      .finally(() => setBusy(false))
+  }
+
+  const unban = (entry) => {
+    if (!window.confirm(interpolate(t('unbanConfirm'), { ip: entry.ip }))) return
+    api(`/bans/${encodeURIComponent(entry.ip)}`, { method: 'DELETE' })
+      .then(() => { flash(t('unbanned')); return load() })
+      .catch((err) => flash(t('failed') + err.message))
+  }
+
+  return h('div', { className: 'um-card' },
+    h('form', { className: 'um-row', style: { marginBottom: 10 }, onSubmit: ban },
+      h('input', { className: 'um-input', placeholder: t('banIpPlaceholder'), value: ip, onChange: (e) => setIp(e.target.value), required: true, style: { width: 220 } }),
+      h('input', { className: 'um-input', placeholder: t('banNotePlaceholder'), value: note, onChange: (e) => setNote(e.target.value), style: { width: 200 } }),
+      h('button', { className: 'um-btn um-btn-danger', type: 'submit', disabled: busy }, t('banAction'))),
+    bans === null
+      ? h('div', { className: 'um-muted' }, t('loading'))
+      : bans.length === 0
+        ? h('div', { className: 'um-empty' }, t('empty'))
+        : h('div', { className: 'um-table-wrap' },
+          h('table', { className: 'um-table' },
+            h('thead', null, h('tr', null,
+              h('th', null, 'IP'),
+              h('th', null, t('colNote')),
+              h('th', null, t('colBannedBy')),
+              h('th', null, t('colTime')),
+              h('th', null, ''))),
+            h('tbody', null, bans.map((entry) => h('tr', { key: entry.ip },
+              h('td', null, entry.ip, entry.ip === selfIp ? h('span', { className: 'um-muted' }, t('selfIp')) : null),
+              h('td', { className: 'um-muted' }, entry.note || '-'),
+              h('td', null, entry.createdBy || '-'),
+              h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.createdAt)),
+              h('td', null, h('button', { className: 'um-btn um-btn-danger', onClick: () => unban(entry) }, t('unbanAction')))))))))
+}
+
 function MyPanel({ me, __t: t, flash }) {
   const [oldPwd, setOldPwd] = useState('')
   const [newPwd, setNewPwd] = useState('')
@@ -762,7 +925,7 @@ function UserManagementSection({ __t: t }) {
 
 function AdminPanel({ me, __t: t, flash }) {
   const [tab, setTab] = useState('users')
-  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')]]
+  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')]]
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
     h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 } },
       h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
@@ -770,7 +933,8 @@ function AdminPanel({ me, __t: t, flash }) {
       h(LogoutButton, { withLabel: true, __t: t })),
     tab === 'users' ? h(UsersTab, { me, __t: t, flash })
       : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
-        : h(ActivityTab, { kind: tab, __t: t }))
+        : tab === 'bans' ? h(BansTab, { __t: t, flash })
+          : h(ActivityTab, { kind: tab, __t: t }))
 }
 
 // ── module wiring ─────────────────────────────────────────────────────────

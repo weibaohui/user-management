@@ -233,3 +233,29 @@ test('installGate prefers the hard gate, degrades when the server is unreachable
   hard.dispose()
   server.close()
 })
+
+test('banned IP is denied 403 before any session work — login page included', async () => {
+  const banned = new Set(['198.51.100.9'])
+  const server = http.createServer((req, res) => { res.writeHead(200); res.end('inner') })
+  const port = await listen(server)
+  const decider = createDecider({
+    resolveSession: async () => ({ user: { username: 'u' } }), // even valid sessions must not save a banned IP
+    getClientIp: (req) => req.socket.remoteAddress.replace(/^::ffff:/, ''),
+    isBanned: (ip) => banned.has(ip),
+  })
+  const dispose = attachGate(server, decider)
+
+  const blocked = await fetch(`http://127.0.0.1:${port}/login`, { redirect: 'manual' })
+  assert.equal(blocked.status, 200, 'loopback is not on the ban list — passes')
+
+  // simulate a banned source via the decider contract directly
+  const decision = await decider({ url: '/login', method: 'GET', headers: {}, socket: { remoteAddress: '198.51.100.9' } })
+  assert.equal(decision.action, 'forbidden')
+  // and for an API path with a session cookie — still forbidden
+  const apiDecision = await decider({ url: '/api/x', method: 'POST', headers: { cookie: 'um_session=good' }, socket: { remoteAddress: '::ffff:198.51.100.9' } })
+  assert.equal(apiDecision.action, 'forbidden', 'v6-mapped ban addresses match')
+
+  dispose()
+  server.close()
+  server.closeAllConnections()
+})

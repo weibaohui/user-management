@@ -111,7 +111,7 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
   const userView = await call('/users', { cookie: userCookie })
   assert.deepEqual(userView.data.users.map((u) => u.username), ['alice'])
   // no hash material ever leaks
-  assert.deepEqual(Object.keys(userView.data.users[0]).sort(), ['createdAt', 'id', 'lastLoginAt', 'role', 'username'])
+  assert.deepEqual(Object.keys(userView.data.users[0]).sort(), ['createdAt', 'disabled', 'id', 'lastLoginAt', 'role', 'username'])
 
   // ── admin actions are admin-only ──
   assert.equal((await call(`/users/${alice.id}/reset-password`, { method: 'POST', cookie: userCookie })).status, 403)
@@ -200,6 +200,47 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
   assert.equal(cleared.status, 200)
   const afterClear = (await call('/audit', { cookie: adminCookie })).data.entries
   assert.ok(afterClear.every((e) => !idsBeforeClear.has(e.id)), 'ledger empty after clear (only the clear action itself may remain)')
+
+  // ── admin user creation with role choice ──
+  assert.equal((await call('/users', { method: 'POST', body: { username: 'made_admin', password: 'secret1', role: 'admin' }, cookie: carolCookie })).status, 403)
+  const made = await call('/users', { method: 'POST', body: { username: 'made_admin', password: 'secret1', role: 'admin' }, cookie: adminCookie })
+  assert.equal(made.status, 200)
+  assert.equal(made.data.user.role, 'admin')
+  const madeLogin = await call('/login', { method: 'POST', body: { username: 'made_admin', password: 'secret1' } })
+  assert.equal((await call('/users', { cookie: cookieOf(madeLogin) })).data.users.length >= 2, true, 'created admin sees all users')
+
+  // ── disable flow: kick sessions, block login, enable restores ──
+  const victim = await call('/register', { method: 'POST', body: { username: 'victim', password: 'secret1' } })
+  const victimCookie = cookieOf(victim)
+  const victimId = victim.data.user.id
+  assert.equal((await call(`/users/${victimId}/disabled`, { method: 'POST', body: { disabled: true }, cookie: victimCookie })).status, 403)
+  const bossSess = await call('/session', { cookie: adminCookie })
+  assert.equal((await call(`/users/${bossSess.data.user.id}/disabled`, { method: 'POST', body: { disabled: true }, cookie: adminCookie })).status, 403, 'no self-disable')
+  const disable = await call(`/users/${victimId}/disabled`, { method: 'POST', body: { disabled: true }, cookie: adminCookie })
+  assert.equal(disable.status, 200)
+  assert.equal(disable.data.user.disabled, true)
+  assert.equal((await call('/session', { cookie: victimCookie })).data.user, null, 'live session dead after disable')
+  const disabledLogin = await call('/login', { method: 'POST', body: { username: 'victim', password: 'secret1' } })
+  assert.equal(disabledLogin.status, 403)
+  assert.ok(String(disabledLogin.data.error).includes('禁用'))
+  await call(`/users/${victimId}/disabled`, { method: 'POST', body: { disabled: false }, cookie: adminCookie })
+  assert.equal((await call('/login', { method: 'POST', body: { username: 'victim', password: 'secret1' } })).status, 200, 're-enabled user signs in')
+
+  // ── IP bans: admin CRUD with self-lockout guard, gate enforces 403 ──
+  assert.equal((await call('/bans', { cookie: carolCookie })).status, 403, 'plain users cannot read the ban list')
+  const selfBan = await call('/bans', { method: 'POST', body: { ip: '127.0.0.1' }, cookie: adminCookie })
+  assert.equal(selfBan.status, 400, 'refuses to ban the requester own IP (lockout guard)')
+  const badIp = await call('/bans', { method: 'POST', body: { ip: '999.9.9.9' }, cookie: adminCookie })
+  assert.equal(badIp.status, 400)
+  const ban = await call('/bans', { method: 'POST', body: { ip: '203.0.113.7', note: 'scanner' }, cookie: adminCookie })
+  assert.equal(ban.status, 200)
+  const bans = await call('/bans', { cookie: adminCookie })
+  assert.ok(bans.data.bans.some((b) => b.ip === '203.0.113.7' && b.note === 'scanner'))
+  assert.equal(bans.data.selfIp, '127.0.0.1')
+  assert.equal((await call('/bans', { method: 'POST', body: { ip: '203.0.113.7' }, cookie: adminCookie })).status, 400, 'duplicate ban rejected')
+  const unbanned = await call(`/bans/${encodeURIComponent('203.0.113.7')}`, { method: 'DELETE', cookie: adminCookie })
+  assert.equal(unbanned.status, 200)
+  assert.equal((await call(`/bans/${encodeURIComponent('203.0.113.7')}`, { method: 'DELETE', cookie: adminCookie })).status, 404)
 
   // ── logout ──
   const out = await call('/logout', { method: 'POST', cookie: carolCookie })

@@ -15,6 +15,7 @@
  */
 
 const fsP = require('node:fs/promises')
+const net = require('node:net')
 const { randomBytes, scrypt: scryptCb, timingSafeEqual, createHash } = require('node:crypto')
 const { promisify } = require('node:util')
 const { join } = require('node:path')
@@ -25,6 +26,7 @@ const USERS_FILE = 'users.json'
 const SESSIONS_FILE = 'sessions.json'
 const ACTIVITY_FILE = 'activity.jsonl'
 const AUDIT_FILE = 'audit.jsonl'
+const BANS_FILE = 'bans.json'
 
 /** scrypt key length / cost — modest defaults, login is not a hot path. */
 const KEY_LEN = 32
@@ -112,11 +114,14 @@ function createStore({ home, now = () => Date.now() } = {}) {
   const sessionsFile = join(dir, SESSIONS_FILE)
   const activityFile = join(dir, ACTIVITY_FILE)
   const auditFile = join(dir, AUDIT_FILE)
+  const bansFile = join(dir, BANS_FILE)
 
   /** @type {{seq:number, users:Array}} */
   let usersDoc = { seq: 0, users: [] }
   /** @type {{tokens:Object<string,{userId,username,createdAt,expiresAt}>}} */
   let sessionsDoc = { tokens: {} }
+  /** @type {{bans:Array<{ip,note,createdAt,createdBy}>}} */
+  let bansDoc = { bans: [] }
   let ledgerLines = 0
   let auditLines = 0
   let auditSeq = 0
@@ -136,6 +141,12 @@ function createStore({ home, now = () => Date.now() } = {}) {
     return run
   }
 
+  function persistBans() {
+    const run = writeChain.users.then(() => atomicWrite(bansFile, JSON.stringify(bansDoc, null, 2)))
+    writeChain.users = run.catch(() => {})
+    return run
+  }
+
   function persistSessions() {
     const run = writeChain.sessions.then(() => atomicWrite(sessionsFile, JSON.stringify(sessionsDoc)))
     writeChain.sessions = run.catch(() => {})
@@ -147,6 +158,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     for (const [file, assign] of [
       [usersFile, (data) => { usersDoc = data }],
       [sessionsFile, (data) => { sessionsDoc = data }],
+      [bansFile, (data) => { bansDoc = data }],
     ]) {
       try {
         const raw = await fsP.readFile(file, 'utf8')
@@ -159,6 +171,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     if (!Array.isArray(usersDoc.users)) usersDoc.users = []
     if (!Number.isFinite(usersDoc.seq)) usersDoc.seq = usersDoc.users.length
     if (!sessionsDoc.tokens || typeof sessionsDoc.tokens !== 'object') sessionsDoc.tokens = {}
+    if (!Array.isArray(bansDoc.bans)) bansDoc.bans = []
     // expired tokens are dropped on boot; ledger line count for rollover
     const ts = now()
     for (const token of Object.keys(sessionsDoc.tokens)) {
@@ -184,7 +197,11 @@ function createStore({ home, now = () => Date.now() } = {}) {
 
   function publicUser(user) {
     if (!user) return null
-    return { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt, lastLoginAt: user.lastLoginAt || null }
+    return {
+      id: user.id, username: user.username, role: user.role,
+      disabled: !!user.disabled,
+      createdAt: user.createdAt, lastLoginAt: user.lastLoginAt || null,
+    }
   }
 
   function findUser(id) {
@@ -226,14 +243,36 @@ function createStore({ home, now = () => Date.now() } = {}) {
   }
 
   async function verifyLogin(username, password) {
+    const outcome = await checkLogin(username, password)
+    return outcome.result === 'ok' || outcome.result === 'disabled' ? outcome.user : null
+  }
+
+  /**
+   * Full login outcome: 'ok' | 'invalid' | 'disabled' (correct credentials
+   * but the account is disabled). The invalid path burns hash time so
+   * missing users are not distinguishable; the disabled path only exists
+   * behind correct credentials, so revealing it is safe.
+   */
+  async function checkLogin(username, password) {
     const user = findUserByUsername(username)
     if (!user) {
-      // burn comparable time so missing users are not distinguishable
       await hashPassword(password || '', '00000000000000000000000000000000')
-      return null
+      return { result: 'invalid' }
     }
-    if (!verifyPassword(user, password)) return null
-    return user
+    if (!verifyPassword(user, password)) return { result: 'invalid' }
+    return { result: user.disabled ? 'disabled' : 'ok', user }
+  }
+
+  /** Disable / enable an account. Disabled users fail login and lose all
+   *  live sessions (resolveSession also re-checks the flag defensively). */
+  async function setDisabled(user, disabled) {
+    if (typeof disabled !== 'boolean') throw new StoreError('bad_request', 'disabled 必须是布尔值')
+    if (disabled && user.role === 'admin' && countAdmins() <= 1) {
+      throw new StoreError('last_admin', '不能禁用最后一个管理员')
+    }
+    if (disabled) user.disabled = true
+    else delete user.disabled
+    await persistUsers()
   }
 
   async function setPassword(user, password) {
@@ -312,6 +351,11 @@ function createStore({ home, now = () => Date.now() } = {}) {
       await persistSessions()
       return null
     }
+    if (user.disabled) {
+      delete sessionsDoc.tokens[token]
+      await persistSessions()
+      return null
+    }
     if (session.expiresAt - ts < SESSION_RENEW_MS) {
       session.expiresAt = ts + SESSION_TTL_MS
       await persistSessions()
@@ -336,6 +380,34 @@ function createStore({ home, now = () => Date.now() } = {}) {
       dropped = true
     }
     if (dropped) await persistSessions()
+  }
+
+  // ── IP bans ──────────────────────────────────────────────────────────────
+
+  function isBanned(ip) {
+    if (!ip) return false
+    return bansDoc.bans.some((b) => b.ip === ip)
+  }
+
+  function listBans() {
+    return bansDoc.bans.slice().sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  /** Ban an IP (validated). The self-lockout guard lives in the API layer —
+   *  it needs the requester's live IP, the store does not. */
+  async function banIp(ip, { note = '', by = null } = {}) {
+    const normalized = String(ip || '').trim()
+    if (net.isIP(normalized) === 0) throw new StoreError('bad_ip', '不是合法的 IP 地址')
+    if (isBanned(normalized)) throw new StoreError('duplicate', '该 IP 已在封禁列表')
+    bansDoc.bans.push({ ip: normalized, note: String(note || '').slice(0, 140), createdAt: now(), createdBy: by })
+    return persistBans()
+  }
+
+  async function unbanIp(ip) {
+    const before = bansDoc.bans.length
+    bansDoc.bans = bansDoc.bans.filter((b) => b.ip !== ip)
+    if (bansDoc.bans.length === before) throw new StoreError('not_found', '该 IP 不在封禁列表')
+    return persistBans()
   }
 
   // ── activity + audit ledgers ─────────────────────────────────────────────
@@ -482,15 +554,17 @@ function createStore({ home, now = () => Date.now() } = {}) {
     // lifecycle
     load,
     // users
-    createUser, verifyLogin, setPassword, setRole, removeUser, touchLogin,
+    createUser, verifyLogin, checkLogin, setPassword, setRole, setDisabled, removeUser, touchLogin,
     listUsers, findUser, findUserByUsername, countAdmins, roleForNextRegistration, publicUser,
     // sessions
     createSession, resolveSession, dropSession, dropUserSessions, pruneSessions,
+    // ip bans
+    isBanned, listBans, banIp, unbanIp,
     // ledger
     appendActivity, listActivity, appendAudit, listAudit, removeAuditEntry, clearAudit,
     // internals for tests
-    __files: { dir, usersFile, sessionsFile, activityFile, auditFile },
-    __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines, auditLines }),
+    __files: { dir, usersFile, sessionsFile, activityFile, auditFile, bansFile },
+    __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines, auditLines, bans: bansDoc.bans }),
     StoreError,
   }
 }

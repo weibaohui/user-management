@@ -211,6 +211,60 @@ test('operation audit ledger: append + filter + independent rollover', async () 
   assert.ok(!existsSync(join(dir, 'activity.jsonl')))
 })
 
+test('disable: login rejected, sessions dropped, resolveSession re-checks, last-admin guard', async () => {
+  const store = makeStore()
+  await store.load()
+  await store.createUser({ username: 'boss', password: 'secret1', role: 'admin' })
+  const alice = await store.createUser({ username: 'alice', password: 'secret1' })
+  const { token } = await store.createSession(store.findUserByUsername('alice'))
+
+  await store.setDisabled(store.findUserByUsername('alice'), true)
+  assert.equal((await store.checkLogin('alice', 'secret1')).result, 'disabled')
+  assert.equal(await store.resolveSession(token), null, 'live session killed by flag re-check')
+  assert.equal(store.publicUser(store.findUserByUsername('alice')).disabled, true)
+
+  await store.setDisabled(store.findUserByUsername('alice'), false)
+  assert.equal((await store.checkLogin('alice', 'secret1')).result, 'ok')
+  assert.equal(store.publicUser(store.findUserByUsername('alice')).disabled, false)
+
+  await assert.rejects(() => store.setDisabled(store.findUserByUsername('boss'), true), (e) => e.code === 'last_admin')
+  await assert.rejects(() => store.setDisabled(store.findUserByUsername('alice'), 'yes'), (e) => e.code === 'bad_request')
+})
+
+test('checkLogin keeps the invalid path indistinguishable, disabled only behind correct credentials', async () => {
+  const store = makeStore()
+  await store.load()
+  await store.createUser({ username: 'alice', password: 'secret1' })
+  await store.setDisabled(store.findUserByUsername('alice'), true)
+  assert.equal((await store.checkLogin('alice', 'wrong')).result, 'invalid')
+  assert.equal((await store.checkLogin('nobody', 'secret1')).result, 'invalid')
+  assert.equal((await store.checkLogin('alice', 'secret1')).result, 'disabled')
+})
+
+test('ip bans: validate, dedupe, list, unban, persistence', async () => {
+  const store = makeStore()
+  await store.load()
+  await assert.rejects(() => store.banIp('not-an-ip'), (e) => e.code === 'bad_ip')
+  await assert.rejects(() => store.banIp('999.1.1.1'), (e) => e.code === 'bad_ip')
+  await store.banIp('10.0.0.5', { note: 'scanner', by: 'boss' })
+  await store.banIp('fe80::1')
+  await assert.rejects(() => store.banIp('10.0.0.5'), (e) => e.code === 'duplicate')
+  assert.equal(store.isBanned('10.0.0.5'), true)
+  assert.equal(store.isBanned('fe80::1'), true)
+  assert.equal(store.isBanned('10.0.0.6'), false)
+  assert.equal(store.isBanned(''), false)
+  assert.equal(store.listBans().length, 2)
+
+  await store.unbanIp('10.0.0.5')
+  assert.equal(store.isBanned('10.0.0.5'), false)
+  await assert.rejects(() => store.unbanIp('10.0.0.5'), (e) => e.code === 'not_found')
+
+  const reopened = makeStore()
+  await reopened.load()
+  assert.equal(reopened.isBanned('fe80::1'), true, 'bans survive restart')
+  assert.equal(reopened.listBans().length, 1)
+})
+
 test('files are written under $DSH_HOME/user-management with 0600', async () => {
   const store = makeStore()
   await store.load()

@@ -116,11 +116,16 @@ async function handleApi(req, res, deps) {
   if (apiPath === '/login' && method === 'POST') {
     const body = await readJsonBody(req)
     const username = typeof body.username === 'string' ? body.username.trim() : ''
-    const user = await store.verifyLogin(username, body.password)
-    if (!user) {
+    const outcome = await store.checkLogin(username, body.password)
+    if (outcome.result === 'invalid') {
       await store.appendActivity({ type: 'login_failed', username: username || null, ip: deps.clientIp(req), detail: 'wrong credentials' })
       return sendJson(res, 401, { error: '用户名或密码错误' })
     }
+    if (outcome.result === 'disabled') {
+      await store.appendActivity({ type: 'login_failed', username: username, userId: outcome.user.id, ip: deps.clientIp(req), detail: 'account disabled' })
+      return sendJson(res, 403, { error: '账号已被禁用，请联系管理员' })
+    }
+    const user = outcome.user
     const { token } = await store.createSession(user)
     await store.touchLogin(user)
     await store.appendActivity({ type: 'login', username: user.username, userId: user.id, ip: deps.clientIp(req) })
@@ -236,7 +241,87 @@ async function handleApi(req, res, deps) {
     return sendJson(res, 200, { ok: true })
   }
 
+  // ── admin-only IP bans ───────────────────────────────────────────────────
+
+  if (apiPath === '/bans' && method === 'GET') {
+    const session = await authed()
+    if (!session) return sendJson(res, 401, { error: '未登录' })
+    if (session.user.role !== 'admin') return sendJson(res, 403, { error: '需要管理员权限' })
+    return sendJson(res, 200, { bans: store.listBans(), selfIp: deps.clientIp(req) })
+  }
+
+  if (apiPath === '/bans' && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    const body = await readJsonBody(req)
+    const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
+    // self-lockout guard: banning your own live IP would lock the whole
+    // deployment (the gate runs before this API can unban it again)
+    if (ip === deps.clientIp(req)) return sendJson(res, 400, { error: '不能封禁当前正在使用的 IP' })
+    try {
+      await store.banIp(ip, { note: body.note, by: admin.user.username })
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
+      throw error
+    }
+    await store.appendActivity({ type: 'ban_ip', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `ip=${ip}${body.note ? ` note=${body.note}` : ''}` })
+    return sendJson(res, 200, { ok: true })
+  }
+
+  const unbanMatch = /^\/bans\/(.+)$/.exec(apiPath)
+  if (unbanMatch && method === 'DELETE') {
+    const admin = await requireAdmin()
+    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    const ip = decodeURIComponent(unbanMatch[1])
+    try {
+      await store.unbanIp(ip)
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
+      throw error
+    }
+    await store.appendActivity({ type: 'unban_ip', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `ip=${ip}` })
+    return sendJson(res, 200, { ok: true })
+  }
+
   // ── admin-only user administration ───────────────────────────────────────
+
+  if (apiPath === '/users' && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    const body = await readJsonBody(req)
+    try {
+      const created = await store.createUser({ username: body.username, password: body.password, role: body.role || 'user' })
+      await store.appendActivity({ type: 'user_created', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `created=${created.username} role=${created.role}` })
+      return sendJson(res, 200, { user: created })
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
+      throw error
+    }
+  }
+
+  const disableMatch = /^\/users\/([A-Za-z0-9_-]+)\/disabled$/.exec(apiPath)
+  if (disableMatch && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    const target = store.findUser(disableMatch[1])
+    if (!target) return sendJson(res, 404, { error: '用户不存在' })
+    if (target.id === admin.user.id) return sendJson(res, 403, { error: '不能禁用自己的账号' })
+    const body = await readJsonBody(req)
+    const disabled = !!body.disabled
+    try {
+      await store.setDisabled(target, disabled)
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
+      throw error
+    }
+    if (disabled) await store.dropUserSessions(target.id)
+    await store.appendActivity({
+      type: disabled ? 'user_disabled' : 'user_enabled',
+      username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req),
+      detail: `target=${target.username}`,
+    })
+    return sendJson(res, 200, { user: store.publicUser(target) })
+  }
 
   const adminMatch = /^\/users\/([A-Za-z0-9_-]+)(?:\/(reset-password|role))?$/.exec(apiPath)
 
@@ -359,6 +444,8 @@ module.exports = {
           await ready
           return store.resolveSession(token)
         },
+        getClientIp: clientIp,
+        isBanned: (ip) => store.isBanned(ip),
         onAccess: (req, resolved, path) => {
           store.appendActivity({
             type: 'access',
