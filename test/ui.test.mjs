@@ -135,3 +135,14 @@ test('filterAudit narrows by username/method/path/status class', () => {
   assert.equal(filterAudit(entries, { username: 'alice', method: 'WS' }).length, 1)
   assert.equal(filterAudit(null).length, 0)
 })
+
+test('canBanIp hides loopback, own IP and empty entries', () => {
+  const { canBanIp } = plugin.__internals
+  assert.equal(canBanIp('203.0.113.9', '127.0.0.1'), true)
+  assert.equal(canBanIp('127.0.0.1', ''), false, 'loopback v4')
+  assert.equal(canBanIp('127.0.0.99', ''), false, 'whole loopback /8')
+  assert.equal(canBanIp('::1', ''), false, 'loopback v6')
+  assert.equal(canBanIp('192.168.31.5', '192.168.31.5'), false, 'own live IP')
+  assert.equal(canBanIp('', '127.0.0.1'), false, 'empty')
+  assert.equal(canBanIp('-', ''), false, 'placeholder dash')
+})

@@ -393,11 +393,13 @@ function createStore({ home, now = () => Date.now() } = {}) {
     return bansDoc.bans.slice().sort((a, b) => b.createdAt - a.createdAt)
   }
 
-  /** Ban an IP (validated). The self-lockout guard lives in the API layer —
-   *  it needs the requester's live IP, the store does not. */
+  /** Ban an IP (validated). Loopback addresses are rejected outright and
+   *  the self-lockout guard lives in the API layer — it needs the
+   *  requester's live IP, the store does not. */
   async function banIp(ip, { note = '', by = null } = {}) {
     const normalized = String(ip || '').trim()
     if (net.isIP(normalized) === 0) throw new StoreError('bad_ip', '不是合法的 IP 地址')
+    if (/^127\./.test(normalized) || normalized === '::1') throw new StoreError('protected_ip', '不能封禁回环地址')
     if (isBanned(normalized)) throw new StoreError('duplicate', '该 IP 已在封禁列表')
     bansDoc.bans.push({ ip: normalized, note: String(note || '').slice(0, 140), createdAt: now(), createdBy: by })
     return persistBans()

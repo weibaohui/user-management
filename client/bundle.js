@@ -126,6 +126,7 @@ window.__ModuleLoader__.load({
       banned: 'IP 已封禁',
       unbanned: 'IP 已解封',
       selfIp: '（当前）',
+      bannedShort: '已封',
       typeUserCreated: '创建用户',
       typeUserDisabled: '禁用用户',
       typeUserEnabled: '启用用户',
@@ -224,6 +225,7 @@ window.__ModuleLoader__.load({
       banned: 'IP banned',
       unbanned: 'IP unbanned',
       selfIp: ' (current)',
+      bannedShort: 'Banned',
       typeUserCreated: 'User created',
       typeUserDisabled: 'User disabled',
       typeUserEnabled: 'User enabled',
@@ -303,6 +305,39 @@ window.__ModuleLoader__.load({
         if (statusClass && String(entry.status || '').charAt(0) !== statusClass) return false
         return true
       })
+    }
+
+    /** Loopback / self addresses must never be bannable (defense in depth —
+     *  the server refuses them too). */
+    const LOOPBACK_IP_RE = /^127(?:\.\d{1,3}){3}$|^::1$|^\[::1\]$/
+
+    function canBanIp(ip, selfIp) {
+      if (!ip) return false
+      if (LOOPBACK_IP_RE.test(ip)) return false
+      if (selfIp && ip === selfIp) return false
+      return true
+    }
+
+    /** Inline ban button for IP cells in the log tables. Hidden for loopback /
+     *  own-IP entries; disables itself after a successful ban. */
+    function BanIpButton({ ip, selfIp, __t: t, flash }) {
+      const [busy, setBusy] = useState(false)
+      const [done, setDone] = useState(false)
+      if (!canBanIp(ip, selfIp)) return null
+      return h('button', {
+        className: 'um-btn um-btn-danger',
+        style: { marginLeft: 6, padding: '0 7px', fontSize: 11, lineHeight: '18px' },
+        disabled: busy || done,
+        title: interpolate(t('banConfirm'), { ip }),
+        onClick: () => {
+          if (!window.confirm(interpolate(t('banConfirm'), { ip }))) return
+          setBusy(true)
+          api('/bans', { method: 'POST', body: { ip, note: '' } })
+            .then(() => { flash(t('banned')); setDone(true) })
+            .catch((e) => flash(t('failed') + e.message))
+            .finally(() => setBusy(false))
+        },
+      }, done ? t('bannedShort') : t('banAction'))
     }
 
     // ── styles ────────────────────────────────────────────────────────────────
@@ -674,13 +709,17 @@ window.__ModuleLoader__.load({
           h('div', { className: 'um-temp-pwd' }, temp.pwd)))
     }
 
-    function ActivityTab({ kind, __t: t }) {
+    function ActivityTab({ kind, __t: t, flash }) {
       const [entries, setEntries] = useState(null)
       const [username, setUsername] = useState('')
       const [type, setType] = useState('')
+      const [selfIp, setSelfIp] = useState('')
 
       const load = () => api('/activity?limit=200').then((d) => setEntries(d.entries)).catch((e) => setEntries([]) /* flash handled by empty state */)
-      useEffect(() => { load() }, [])
+      useEffect(() => {
+        load()
+        api('/bans').then((d) => setSelfIp(d.selfIp)).catch(() => {})
+      }, [])
 
       const visible = useMemo(
         () => filterActivity(entries, { username: username.trim() || null, type: type || null })
@@ -712,7 +751,8 @@ window.__ModuleLoader__.load({
                   h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
                   h('td', null, t(TYPE_LABELS[entry.type] || entry.type)),
                   h('td', null, entry.username || '-'),
-                  h('td', { className: 'um-muted' }, entry.ip || '-'),
+                  h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, entry.ip || '-',
+                    h(BanIpButton, { ip: entry.ip, selfIp, __t: t, flash })),
                   h('td', { className: 'um-muted' }, entry.detail || '-')))))))
     }
 
@@ -726,9 +766,13 @@ window.__ModuleLoader__.load({
       const [path, setPath] = useState('')
       const [statusClass, setStatusClass] = useState('')
       const [busyId, setBusyId] = useState(null)
+      const [selfIp, setSelfIp] = useState('')
 
       const load = () => api('/audit?limit=500').then((d) => setEntries(d.entries)).catch(() => setEntries([]))
-      useEffect(() => { load() }, [])
+      useEffect(() => {
+        load()
+        api('/bans').then((d) => setSelfIp(d.selfIp)).catch(() => {})
+      }, [])
 
       const del = (entry) => {
         if (!window.confirm(t('delEntryConfirm'))) return
@@ -790,7 +834,7 @@ window.__ModuleLoader__.load({
                   h('td', null, entry.type === 'ws' ? t('typeWsConn') : entry.method || '-'),
                   h('td', { className: 'um-muted', style: { wordBreak: 'break-all' } }, entry.path || '-'),
                   h('td', null, entry.username || '-'),
-                  h('td', { className: 'um-muted' }, entry.ip || '-'),
+                  h('td', null, entry.ip || '-', h(BanIpButton, { ip: entry.ip, selfIp, __t: t, flash })),
                   h('td', null, entry.type === 'ws' ? h('span', { className: 'um-badge' }, t('typeWsConn')) : statusBadge(entry.status)),
                   h('td', null, h('button', {
                     className: 'um-btn um-btn-danger', disabled: busyId === entry.id,
@@ -944,7 +988,7 @@ window.__ModuleLoader__.load({
         tab === 'users' ? h(UsersTab, { me, __t: t, flash })
           : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
             : tab === 'bans' ? h(BansTab, { __t: t, flash })
-              : h(ActivityTab, { kind: tab, __t: t }))
+              : h(ActivityTab, { kind: tab, __t: t, flash }))
     }
 
     // ── module wiring ─────────────────────────────────────────────────────────
@@ -958,7 +1002,7 @@ window.__ModuleLoader__.load({
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
       __boot,
-      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName },
+      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton },
       apply(ctx) {
         ctx.locale.register(NS, 'zh', ZH)
         ctx.locale.register(NS, 'en', EN)

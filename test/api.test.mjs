@@ -230,6 +230,8 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
   assert.equal((await call('/bans', { cookie: carolCookie })).status, 403, 'plain users cannot read the ban list')
   const selfBan = await call('/bans', { method: 'POST', body: { ip: '127.0.0.1' }, cookie: adminCookie })
   assert.equal(selfBan.status, 400, 'refuses to ban the requester own IP (lockout guard)')
+  const loopbackBan = await call('/bans', { method: 'POST', body: { ip: '127.0.0.55' }, cookie: adminCookie })
+  assert.equal(loopbackBan.status, 400, 'loopback addresses are protected even when not the self IP')
   const badIp = await call('/bans', { method: 'POST', body: { ip: '999.9.9.9' }, cookie: adminCookie })
   assert.equal(badIp.status, 400)
   const ban = await call('/bans', { method: 'POST', body: { ip: '203.0.113.7', note: 'scanner' }, cookie: adminCookie })
