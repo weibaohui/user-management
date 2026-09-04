@@ -34,6 +34,12 @@ window.__ModuleLoader__.load({
     }
     const { createElement: h, useState, useEffect, useMemo, useRef } = __React
 
+    // react-dom is a loader platform module (portals + createRoot). Under plain
+    // Node (contract tests) it is absent; every use site guards on it and
+    // degrades (menu renders inline-less null, settings section skips mount).
+    let RDP = null
+    try { RDP = require('react-dom') } catch {}
+
     const CLIENT_NAME = '@weibaohui/user-management'
     const NS = 'user-management'
 
