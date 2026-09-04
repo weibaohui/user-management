@@ -1,0 +1,410 @@
+'use strict'
+
+/**
+ * user-management store — users / sessions / activity ledger.
+ *
+ * Everything lives under `$DSH_HOME/user-management/`:
+ * - users.json     accounts (scrypt password hashes), mode 0600, atomic writes
+ * - sessions.json  issued session tokens (survive restarts), same protection
+ * - activity.jsonl append-only event ledger (logins, admin actions, page
+ *                  accesses), rolled over to the tail MAX_LEDGER_LINES
+ *
+ * No third-party dependencies: hashing is crypto.scrypt, tokens are
+ * crypto.randomBytes. All mutation paths are async and serialize through
+ * per-file write chains so concurrent requests cannot interleave writes.
+ */
+
+const fsP = require('node:fs/promises')
+const { randomBytes, scrypt: scryptCb, timingSafeEqual, createHash } = require('node:crypto')
+const { promisify } = require('node:util')
+const { join } = require('node:path')
+
+const scrypt = promisify(scryptCb)
+
+const USERS_FILE = 'users.json'
+const SESSIONS_FILE = 'sessions.json'
+const ACTIVITY_FILE = 'activity.jsonl'
+
+/** scrypt key length / cost — modest defaults, login is not a hot path. */
+const KEY_LEN = 32
+const SCRYPT_COST = 16384
+/** Session lifetime; sliding — each authenticated check past half-life renews. */
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const SESSION_RENEW_MS = SESSION_TTL_MS / 2
+/** Ledger rollover: trim to the tail once the file grows past 2× the cap. */
+const MAX_LEDGER_LINES = 2000
+
+const USERNAME_RE = /^[a-zA-Z0-9_-]{2,32}$/
+const MIN_PASSWORD_LEN = 6
+const ACTIVITY_LIMIT_DEFAULT = 200
+
+class StoreError extends Error {
+  constructor(code, message) {
+    super(message)
+    this.code = code
+  }
+}
+
+/** dsh data root — mirrors the host ($DSH_HOME, default ~/.dsh). */
+function dshHome() {
+  return process.env.DSH_HOME ? require('node:path').resolve(process.env.DSH_HOME) : join(require('node:os').homedir(), '.dsh')
+}
+
+function isValidUsername(name) {
+  return typeof name === 'string' && USERNAME_RE.test(name)
+}
+
+function isValidPassword(pw) {
+  return typeof pw === 'string' && pw.length >= MIN_PASSWORD_LEN && pw.length <= 256
+}
+
+async function hashPassword(password, salt) {
+  const useSalt = salt || randomBytes(16).toString('hex')
+  const derived = await scrypt(password, useSalt, KEY_LEN, { N: SCRYPT_COST, r: 8, p: 1 })
+  return { salt: useSalt, passHash: derived.toString('hex') }
+}
+
+/** Constant-time password check against a stored {salt, passHash} record. */
+function verifyPassword(record, password) {
+  if (!record || !record.salt || !record.passHash || typeof password !== 'string') return false
+  const { scryptSync } = require('node:crypto')
+  const derived = scryptSync(password, record.salt, KEY_LEN, { N: SCRYPT_COST, r: 8, p: 1 })
+  const expected = Buffer.from(record.passHash, 'hex')
+  if (derived.length !== expected.length) return false
+  return timingSafeEqual(derived, expected)
+}
+
+/** Random URL-safe token (session ids, one-time reset passwords). */
+function randomToken(bytes = 32) {
+  return randomBytes(bytes).toString('base64url')
+}
+
+/** Temps are 12 chars but human-typeable: groups of 4. */
+function tempPassword() {
+  const raw = randomToken(9) // 12 base64url chars
+  return raw.slice(0, 4) + '-' + raw.slice(4, 8) + '-' + raw.slice(8, 12)
+}
+
+/** Stable token fingerprint for ledger entries — never log the token itself. */
+function tokenFingerprint(token) {
+  return createHash('sha256').update(String(token)).digest('hex').slice(0, 12)
+}
+
+function normalizeIp(raw) {
+  if (!raw) return ''
+  let ip = String(raw)
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7)
+  if (ip === '::1') ip = '127.0.0.1'
+  return ip
+}
+
+/**
+ * Create a store rooted at `<home>/user-management`. All state is cached in
+ * memory after load; writes persist through serialized atomic replacements.
+ */
+function createStore({ home, now = () => Date.now() } = {}) {
+  const dir = join(home, 'user-management')
+  const usersFile = join(dir, USERS_FILE)
+  const sessionsFile = join(dir, SESSIONS_FILE)
+  const activityFile = join(dir, ACTIVITY_FILE)
+
+  /** @type {{seq:number, users:Array}} */
+  let usersDoc = { seq: 0, users: [] }
+  /** @type {{tokens:Object<string,{userId,username,createdAt,expiresAt}>}} */
+  let sessionsDoc = { tokens: {} }
+  let ledgerLines = 0
+  const writeChain = { users: Promise.resolve(), sessions: Promise.resolve(), ledger: Promise.resolve() }
+
+  function atomicWrite(file, content) {
+    return fsP.mkdir(dir, { recursive: true }).then(() => {
+      const temp = join(dir, `.${randomBytes(6).toString('hex')}.tmp`)
+      return fsP.writeFile(temp, content, { encoding: 'utf8', mode: 0o600 })
+        .then(() => fsP.rename(temp, file))
+    })
+  }
+
+  function persistUsers() {
+    const run = writeChain.users.then(() => atomicWrite(usersFile, JSON.stringify(usersDoc, null, 2)))
+    writeChain.users = run.catch(() => {})
+    return run
+  }
+
+  function persistSessions() {
+    const run = writeChain.sessions.then(() => atomicWrite(sessionsFile, JSON.stringify(sessionsDoc)))
+    writeChain.sessions = run.catch(() => {})
+    return run
+  }
+
+  async function load() {
+    await fsP.mkdir(dir, { recursive: true })
+    for (const [file, assign] of [
+      [usersFile, (data) => { usersDoc = data }],
+      [sessionsFile, (data) => { sessionsDoc = data }],
+    ]) {
+      try {
+        const raw = await fsP.readFile(file, 'utf8')
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') assign(parsed)
+      } catch (e) {
+        if (e && e.code !== 'ENOENT') throw e
+      }
+    }
+    if (!Array.isArray(usersDoc.users)) usersDoc.users = []
+    if (!Number.isFinite(usersDoc.seq)) usersDoc.seq = usersDoc.users.length
+    if (!sessionsDoc.tokens || typeof sessionsDoc.tokens !== 'object') sessionsDoc.tokens = {}
+    // expired tokens are dropped on boot; ledger line count for rollover
+    const ts = now()
+    for (const token of Object.keys(sessionsDoc.tokens)) {
+      if (!sessionsDoc.tokens[token] || sessionsDoc.tokens[token].expiresAt <= ts) delete sessionsDoc.tokens[token]
+    }
+    try { ledgerLines = (await fsP.readFile(activityFile, 'utf8')).split('\n').filter((l) => l.trim() !== '').length } catch { ledgerLines = 0 }
+    return { users: usersDoc.users.length, sessions: Object.keys(sessionsDoc.tokens).length }
+  }
+
+  // ── users ────────────────────────────────────────────────────────────────
+
+  function publicUser(user) {
+    if (!user) return null
+    return { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt, lastLoginAt: user.lastLoginAt || null }
+  }
+
+  function findUser(id) {
+    return usersDoc.users.find((u) => u.id === id) || null
+  }
+
+  function findUserByUsername(username) {
+    const needle = String(username || '').toLowerCase()
+    return usersDoc.users.find((u) => u.username.toLowerCase() === needle) || null
+  }
+
+  function countAdmins() {
+    return usersDoc.users.filter((u) => u.role === 'admin').length
+  }
+
+  async function createUser({ username, password, role = 'user' }) {
+    if (!isValidUsername(username)) throw new StoreError('bad_username', '用户名需 2-32 位，仅限字母/数字/下划线/连字符')
+    if (!isValidPassword(password)) throw new StoreError('bad_password', `密码至少 ${MIN_PASSWORD_LEN} 位`)
+    if (findUserByUsername(username)) throw new StoreError('duplicate', '用户名已存在')
+    if (role !== 'admin' && role !== 'user') throw new StoreError('bad_role', 'role 必须是 admin 或 user')
+    const { salt, passHash } = await hashPassword(password)
+    const user = {
+      id: `u_${++usersDoc.seq}_${randomToken(6)}`,
+      username: String(username),
+      role,
+      salt,
+      passHash,
+      createdAt: now(),
+      lastLoginAt: null,
+    }
+    usersDoc.users.push(user)
+    await persistUsers()
+    return publicUser(user)
+  }
+
+  /** First account in an empty system becomes admin (see README). */
+  function roleForNextRegistration() {
+    return usersDoc.users.length === 0 ? 'admin' : 'user'
+  }
+
+  async function verifyLogin(username, password) {
+    const user = findUserByUsername(username)
+    if (!user) {
+      // burn comparable time so missing users are not distinguishable
+      await hashPassword(password || '', '00000000000000000000000000000000')
+      return null
+    }
+    if (!verifyPassword(user, password)) return null
+    return user
+  }
+
+  async function setPassword(user, password) {
+    if (!isValidPassword(password)) throw new StoreError('bad_password', `密码至少 ${MIN_PASSWORD_LEN} 位`)
+    const { salt, passHash } = await hashPassword(password)
+    user.salt = salt
+    user.passHash = passHash
+    await persistUsers()
+  }
+
+  async function setRole(user, role) {
+    if (role !== 'admin' && role !== 'user') throw new StoreError('bad_role', 'role 必须是 admin 或 user')
+    if (user.role === 'admin' && role !== 'admin' && countAdmins() <= 1) {
+      throw new StoreError('last_admin', '不能降级最后一个管理员')
+    }
+    user.role = role
+    await persistUsers()
+  }
+
+  async function removeUser(user) {
+    const index = usersDoc.users.indexOf(user)
+    if (index === -1) throw new StoreError('not_found', '用户不存在')
+    if (user.role === 'admin' && countAdmins() <= 1) {
+      throw new StoreError('last_admin', '不能删除最后一个管理员')
+    }
+    usersDoc.users.splice(index, 1)
+    for (const token of Object.keys(sessionsDoc.tokens)) {
+      if (sessionsDoc.tokens[token].userId === user.id) delete sessionsDoc.tokens[token]
+    }
+    await persistUsers()
+    return persistSessions()
+  }
+
+  async function touchLogin(user) {
+    user.lastLoginAt = now()
+    await persistUsers()
+  }
+
+  function listUsers() {
+    return usersDoc.users.map(publicUser)
+  }
+
+  // ── sessions ─────────────────────────────────────────────────────────────
+
+  async function createSession(user) {
+    const token = randomToken()
+    const ts = now()
+    sessionsDoc.tokens[token] = { userId: user.id, username: user.username, createdAt: ts, expiresAt: ts + SESSION_TTL_MS }
+    await pruneSessions()
+    return { token, expiresAt: ts + SESSION_TTL_MS }
+  }
+
+  async function pruneSessions() {
+    const ts = now()
+    for (const token of Object.keys(sessionsDoc.tokens)) {
+      const session = sessionsDoc.tokens[token]
+      if (!session || session.expiresAt <= ts) delete sessionsDoc.tokens[token]
+    }
+    return persistSessions()
+  }
+
+  /** Resolve a token → {user, session, token}. Sliding renewal past half-life. */
+  async function resolveSession(token) {
+    if (!token || typeof token !== 'string') return null
+    const session = sessionsDoc.tokens[token]
+    if (!session) return null
+    const ts = now()
+    if (session.expiresAt <= ts) {
+      delete sessionsDoc.tokens[token]
+      await persistSessions()
+      return null
+    }
+    const user = findUser(session.userId)
+    if (!user) {
+      delete sessionsDoc.tokens[token]
+      await persistSessions()
+      return null
+    }
+    if (session.expiresAt - ts < SESSION_RENEW_MS) {
+      session.expiresAt = ts + SESSION_TTL_MS
+      await persistSessions()
+    }
+    return { user, session, token }
+  }
+
+  async function dropSession(token) {
+    if (token && sessionsDoc.tokens[token]) {
+      delete sessionsDoc.tokens[token]
+      await persistSessions()
+    }
+  }
+
+  /** Kill every session of a user (password reset / role change / delete). */
+  async function dropUserSessions(userId, exceptToken) {
+    let dropped = false
+    for (const token of Object.keys(sessionsDoc.tokens)) {
+      if (sessionsDoc.tokens[token].userId !== userId) continue
+      if (token === exceptToken) continue
+      delete sessionsDoc.tokens[token]
+      dropped = true
+    }
+    if (dropped) await persistSessions()
+  }
+
+  // ── activity ledger ──────────────────────────────────────────────────────
+
+  function ledgerLine(entry) {
+    return JSON.stringify({
+      ts: now(),
+      type: entry.type,
+      username: entry.username || null,
+      userId: entry.userId || null,
+      ip: entry.ip || '',
+      detail: entry.detail || '',
+    })
+  }
+
+  async function appendActivity(entry) {
+    const line = ledgerLine(entry) + '\n'
+    const run = writeChain.ledger
+      .then(() => fsP.appendFile(activityFile, line, { encoding: 'utf8', mode: 0o600 }))
+      .then(async () => {
+        ledgerLines += 1
+        if (ledgerLines > MAX_LEDGER_LINES * 2) {
+          const raw = await fsP.readFile(activityFile, 'utf8')
+          const lines = raw.split('\n').filter((l) => l.trim() !== '')
+          const keep = lines.slice(-MAX_LEDGER_LINES)
+          ledgerLines = keep.length
+          await atomicWrite(activityFile, keep.join('\n') + '\n')
+        }
+      })
+    writeChain.ledger = run.catch(() => {})
+    return run
+  }
+
+  /**
+   * Read ledger entries newest-first. Filters: type (exact), userId, and a
+   * set of types (`types`). `limit` caps the scan window from the tail.
+   */
+  async function listActivity({ type, types, userId, limit = ACTIVITY_LIMIT_DEFAULT } = {}) {
+    let raw = ''
+    try { raw = await fsP.readFile(activityFile, 'utf8') } catch { return [] }
+    const lines = raw.split('\n').filter((l) => l.trim() !== '')
+    const cap = Math.max(1, Math.min(Number(limit) || ACTIVITY_LIMIT_DEFAULT, MAX_LEDGER_LINES))
+    const wantedTypes = Array.isArray(types) ? new Set(types) : null
+    const out = []
+    for (let i = lines.length - 1; i >= 0 && out.length < cap; i -= 1) {
+      let entry
+      try { entry = JSON.parse(lines[i]) } catch { continue }
+      if (type && entry.type !== type) continue
+      if (wantedTypes && !wantedTypes.has(entry.type)) continue
+      if (userId && entry.userId !== userId) continue
+      out.push(entry)
+    }
+    return out
+  }
+
+  return {
+    // lifecycle
+    load,
+    // users
+    createUser, verifyLogin, setPassword, setRole, removeUser, touchLogin,
+    listUsers, findUser, findUserByUsername, countAdmins, roleForNextRegistration, publicUser,
+    // sessions
+    createSession, resolveSession, dropSession, dropUserSessions, pruneSessions,
+    // ledger
+    appendActivity, listActivity,
+    // internals for tests
+    __files: { dir, usersFile, sessionsFile, activityFile },
+    __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines }),
+    StoreError,
+  }
+}
+
+module.exports = {
+  createStore,
+  dshHome,
+  isValidUsername,
+  isValidPassword,
+  verifyPassword,
+  hashPassword,
+  randomToken,
+  tempPassword,
+  tokenFingerprint,
+  normalizeIp,
+  StoreError,
+  SESSION_TTL_MS,
+  SESSION_RENEW_MS,
+  MAX_LEDGER_LINES,
+  USERNAME_RE,
+  MIN_PASSWORD_LEN,
+  ACTIVITY_LIMIT_DEFAULT,
+}
