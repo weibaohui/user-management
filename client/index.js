@@ -302,7 +302,7 @@ function filterAudit(entries, { username, method, path, statusClass } = {}) {
 const LOOPBACK_IP_RE = /^127(?:\.\d{1,3}){3}$|^::1$|^\[::1\]$/
 
 function canBanIp(ip, selfIp) {
-  if (!ip) return false
+  if (!ip || ip === '-') return false
   if (LOOPBACK_IP_RE.test(ip)) return false
   if (selfIp && ip === selfIp) return false
   return true
