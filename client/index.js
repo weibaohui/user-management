@@ -86,6 +86,7 @@ const ZH = {
   delEntryConfirm: '删除这条操作记录？',
   auditCleared: '操作日志已清空',
   entryDeleted: '记录已删除',
+  actionLogout: '退出登录',
   typeLogin: '登录',
   typeLoginFailed: '登录失败',
   typeLogout: '登出',
@@ -155,6 +156,7 @@ const EN = {
   delEntryConfirm: 'Delete this audit entry?',
   auditCleared: 'Operation log cleared',
   entryDeleted: 'Entry deleted',
+  actionLogout: 'Sign out',
   typeLogin: 'Login',
   typeLoginFailed: 'Login failed',
   typeLogout: 'Logout',
@@ -232,6 +234,8 @@ const STYLE = `
 .um-wrap { font-size: 13px; color: var(--dsw-alias-label-primary); display: flex; flex-direction: column; gap: 14px; }
 .um-avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: rgba(255,255,255,.95); font-weight: 600; flex: none; user-select: none; letter-spacing: 0; }
 .um-brand-name { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 150px; }
+.um-logout { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 6px 10px; border-radius: 7px; cursor: pointer; flex: none; }
+.um-logout:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-state-error-primary); }
 .um-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 14px 16px; }
 .um-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .um-title { font-size: 14px; font-weight: 600; margin: 0; }
@@ -341,6 +345,35 @@ function BrandName() {
   const [me, setMe] = useState(sessionCache.me)
   useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
   return h('span', { className: 'um-brand-name', title: me ? me.username : '' }, me ? me.username : '')
+}
+
+// ── logout ────────────────────────────────────────────────────────────────
+
+function doLogout() {
+  // clearing the session makes the gate bounce the next navigation to /login
+  api('/logout', { method: 'POST' }).catch(() => {}).finally(() => { location.href = '/login' })
+}
+
+function PowerIcon() {
+  return h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'aria-hidden': 'true' },
+    h('path', { d: 'M18.36 6.64a9 9 0 1 1-12.73 0' }),
+    h('line', { x1: 12, y1: 2, x2: 12, y2: 12 }))
+}
+
+function LogoutButton({ withLabel, __t: t }) {
+  useEffect(ensureStyles, [])
+  return h('button', {
+    className: 'um-logout',
+    title: t('actionLogout'),
+    'aria-label': t('actionLogout'),
+    onClick: doLogout,
+  }, PowerIcon(), withLabel ? t('actionLogout') : null)
+}
+
+/** Sidebar footer action: a quiet power icon that reddens on hover.
+ *  Icon-only (title carries the name) so it fits both fold states. */
+function FooterLogoutSlot() {
+  return h(LogoutButton, { withLabel: false, __t: (key) => ZH[key] || key })
 }
 
 // ── components ────────────────────────────────────────────────────────────
@@ -584,8 +617,10 @@ function MyPanel({ me, __t: t, flash }) {
 
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } },
     h('div', { className: 'um-card' },
-      h('h3', { className: 'um-title', style: { marginBottom: 10 } }, t('myInfo')),
-      h('dl', { className: 'um-kv' },
+      h('div', { className: 'um-head' },
+        h('h3', { className: 'um-title' }, t('myInfo')),
+        h(LogoutButton, { withLabel: true, __t: t })),
+      h('dl', { className: 'um-kv', style: { marginTop: 10 } },
         h('dt', null, t('colUser')), h('dd', null, me.username),
         h('dt', null, t('colRole')), h('dd', null, h(RoleBadge, { role: me.role, __t: t })),
         h('dt', null, t('colCreatedAt')), h('dd', null, formatTime(me.createdAt)),
@@ -644,8 +679,10 @@ function AdminPanel({ me, __t: t, flash }) {
   const [tab, setTab] = useState('users')
   const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')]]
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-    h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
-      h('button', { key, className: tab === key ? 'um-tab active' : 'um-tab', onClick: () => setTab(key) }, label))),
+    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 } },
+      h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
+        h('button', { key, className: tab === key ? 'um-tab active' : 'um-tab', onClick: () => setTab(key) }, label))),
+      h(LogoutButton, { withLabel: true, __t: t })),
     tab === 'users' ? h(UsersTab, { me, __t: t, flash })
       : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
         : h(ActivityTab, { kind: tab, __t: t }))
@@ -679,6 +716,14 @@ module.exports = {
         yield ctx.slots.register({ name: 'sidebar.brand.name', priority: -1 }, BrandName)
       }))
     }, 'user-management: sidebar brand')
+    ctx.effect(() => {
+      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+        name: 'sidebar.footer.action',
+        id: CLIENT_NAME,
+        order: 40,
+        locale: NS,
+      }, FooterLogoutSlot))
+    }, 'user-management: sidebar logout')
     ctx.effect(() => {
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',

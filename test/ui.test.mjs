@@ -64,7 +64,7 @@ test('apply registers dictionaries and the settings.section slot', () => {
   plugin.apply(ctx)
   assert.deepEqual(calls.map((c) => [c[0], c[1]]).sort(), [[NS, 'en'], [NS, 'zh']])
   const names = registered.map((r) => r.spec.name).sort()
-  assert.deepEqual(names, ['settings.section', 'sidebar.brand.mark', 'sidebar.brand.name'])
+  assert.deepEqual(names, ['settings.section', 'sidebar.brand.mark', 'sidebar.brand.name', 'sidebar.footer.action'])
   // brand seats are single-slot; the host default sits at priority 0 — we
   // must register lower ("lowest renders") to shadow it without erroring
   for (const { spec } of registered) {
