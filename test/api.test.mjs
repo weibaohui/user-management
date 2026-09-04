@@ -175,14 +175,31 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
   assert.equal((await call('/audit', { cookie: carolCookie })).status, 403)
   const audit = await call('/audit?limit=500', { cookie: adminCookie })
   assert.equal(audit.status, 200)
-  const auditedUsers = new Set(audit.data.entries.map((e) => e.path))
-  assert.ok(auditedUsers.has('/user-management/api/register'), 'register call audited')
-  assert.ok(auditedUsers.has('/user-management/api/login'), 'login call audited')
-  assert.ok(auditedUsers.has('/user-management/api/session'), 'session probe audited')
+  const auditedPaths = new Set(audit.data.entries.map((e) => e.path))
+  assert.ok(auditedPaths.has('/user-management/api/register'), 'register call audited')
+  assert.ok(auditedPaths.has('/user-management/api/login'), 'login call audited')
+  assert.ok(auditedPaths.has('/user-management/api/session'), 'session probe audited')
   const resetAudit = audit.data.entries.find((e) => e.path === `/user-management/api/users/${alice.id}/reset-password`)
   assert.ok(resetAudit && resetAudit.status === 200 && resetAudit.username === 'boss', 'reset-password audited with operator + status')
   const filtered = await call('/audit?path=reset-password&method=POST', { cookie: adminCookie })
   assert.ok(filtered.data.entries.every((e) => e.path.includes('reset-password') && e.method === 'POST'))
+
+  // ── audit entries carry ids; admins can delete one entry / clear all ──
+  // (the delete/clear requests are themselves audited — log hygiene leaves a
+  // trace — so counts shift; assert on ids, not totals)
+  assert.ok(audit.data.entries.every((e) => /^a\d+$/.test(e.id)), 'every audit entry has an id')
+  assert.equal((await call(`/audit/${audit.data.entries[0].id}`, { method: 'DELETE', cookie: carolCookie })).status, 403)
+  const targetId = audit.data.entries[0].id
+  const delOne = await call(`/audit/${targetId}`, { method: 'DELETE', cookie: adminCookie })
+  assert.equal(delOne.status, 200)
+  const afterEntries = (await call('/audit', { cookie: adminCookie })).data.entries
+  assert.ok(!afterEntries.some((e) => e.id === targetId), 'single entry removed')
+  assert.equal((await call(`/audit/${targetId}`, { method: 'DELETE', cookie: adminCookie })).status, 404, 'deleting twice 404s')
+  const idsBeforeClear = new Set(afterEntries.map((e) => e.id))
+  const cleared = await call('/audit', { method: 'DELETE', cookie: adminCookie })
+  assert.equal(cleared.status, 200)
+  const afterClear = (await call('/audit', { cookie: adminCookie })).data.entries
+  assert.ok(afterClear.every((e) => !idsBeforeClear.has(e.id)), 'ledger empty after clear (only the clear action itself may remain)')
 
   // ── logout ──
   const out = await call('/logout', { method: 'POST', cookie: carolCookie })

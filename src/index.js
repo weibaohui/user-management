@@ -219,6 +219,23 @@ async function handleApi(req, res, deps) {
     return sendJson(res, 200, { entries })
   }
 
+  if (apiPath === '/audit' && method === 'DELETE') {
+    const session = await requireAdmin()
+    if (!session) return sendJson(res, 403, { error: '需要管理员权限' })
+    await store.clearAudit()
+    await store.appendActivity({ type: 'audit_clear', username: session.user.username, userId: session.user.id, ip: deps.clientIp(req) })
+    return sendJson(res, 200, { ok: true })
+  }
+
+  const auditDeleteMatch = /^\/audit\/([A-Za-z0-9_-]+)$/.exec(apiPath)
+  if (auditDeleteMatch && method === 'DELETE') {
+    const session = await requireAdmin()
+    if (!session) return sendJson(res, 403, { error: '需要管理员权限' })
+    const removed = await store.removeAuditEntry(auditDeleteMatch[1])
+    if (!removed) return sendJson(res, 404, { error: '记录不存在' })
+    return sendJson(res, 200, { ok: true })
+  }
+
   // ── admin-only user administration ───────────────────────────────────────
 
   const adminMatch = /^\/users\/([A-Za-z0-9_-]+)(?:\/(reset-password|role))?$/.exec(apiPath)

@@ -81,6 +81,11 @@ const ZH = {
   empty: '暂无记录',
   opOk: '操作成功',
   failed: '操作失败：',
+  clearLog: '清空',
+  clearLogConfirm: '确定清空全部操作日志？此操作不可恢复。',
+  delEntryConfirm: '删除这条操作记录？',
+  auditCleared: '操作日志已清空',
+  entryDeleted: '记录已删除',
   typeLogin: '登录',
   typeLoginFailed: '登录失败',
   typeLogout: '登出',
@@ -145,6 +150,11 @@ const EN = {
   empty: 'No records',
   opOk: 'Done',
   failed: 'Operation failed: ',
+  clearLog: 'Clear',
+  clearLogConfirm: 'Clear the entire operation log? This cannot be undone.',
+  delEntryConfirm: 'Delete this audit entry?',
+  auditCleared: 'Operation log cleared',
+  entryDeleted: 'Entry deleted',
   typeLogin: 'Login',
   typeLoginFailed: 'Login failed',
   typeLogout: 'Logout',
@@ -220,6 +230,8 @@ function filterAudit(entries, { username, method, path, statusClass } = {}) {
 
 const STYLE = `
 .um-wrap { font-size: 13px; color: var(--dsw-alias-label-primary); display: flex; flex-direction: column; gap: 14px; }
+.um-avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: rgba(255,255,255,.95); font-weight: 600; flex: none; user-select: none; letter-spacing: 0; }
+.um-brand-name { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 150px; }
 .um-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 14px 16px; }
 .um-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .um-title { font-size: 14px; font-weight: 600; margin: 0; }
@@ -232,10 +244,12 @@ const STYLE = `
 .um-tabs { display: flex; gap: 4px; background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 3px; width: max-content; }
 .um-tab { border: 0; background: transparent; color: var(--dsw-alias-label-secondary); border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
 .um-tab.active { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+.um-table-wrap { border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; overflow: auto; }
 .um-table { width: 100%; border-collapse: collapse; }
-.um-table th { text-align: left; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-tertiary); padding: 6px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); white-space: nowrap; }
-.um-table td { padding: 7px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); vertical-align: middle; }
-.um-table tr:last-child td { border-bottom: 0; }
+.um-table th { text-align: left; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); padding: 7px 10px; border-bottom: 1px solid var(--dsw-alias-border-l2); white-space: nowrap; }
+.um-table td { padding: 7px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); vertical-align: middle; }
+.um-table tbody tr:last-child td { border-bottom: 0; }
+.um-table tbody tr:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .um-badge { display: inline-block; font-size: 11px; border-radius: 5px; padding: 1px 7px; border: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
 .um-badge-admin { color: var(--dsw-alias-state-business-primary); border-color: var(--dsw-alias-state-business-primary); }
 .um-input { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border-radius: 7px; padding: 5px 9px; font-size: 12px; outline: none; }
@@ -271,6 +285,57 @@ function UmDialog({ title, onClose, children, footer }) {
       title && h('h3', null, title),
       children,
       footer && h('div', { className: 'um-dlg-foot' }, footer)))
+}
+
+// ── sidebar brand (avatar + username, top-left) ───────────────────────────
+
+/** Module-level session cache: the brand row and the settings section share
+ *  one /session fetch per page load. undefined = loading, null = signed out. */
+const sessionCache = { me: undefined }
+function loadMeCached() {
+  if (sessionCache.me !== undefined) return Promise.resolve(sessionCache.me)
+  return api('/session').then((d) => { sessionCache.me = d.user; return d.user })
+    .catch(() => { sessionCache.me = null; return null })
+}
+
+function avatarHue(username) {
+  let hash = 0
+  for (const ch of String(username || '?')) hash = (hash * 31 + ch.codePointAt(0)) % 360
+  return hash
+}
+
+/** Initial-letter avatar: deterministic hue per username, theme-safe. */
+function UserAvatar({ username, size = 22 }) {
+  const label = String(username || '?')
+  return h('div', {
+    className: 'um-avatar',
+    title: label,
+    style: {
+      width: size,
+      height: size,
+      fontSize: Math.max(10, Math.round(size * 0.44)),
+      background: `hsl(${avatarHue(label)}, 42%, 46%)`,
+    },
+  }, label.charAt(0).toUpperCase())
+}
+
+/** Sidebar brand mark — host renders it in the expanded brand row AND the
+ *  collapsed rail (owner supplies the square `size`), so fold states adapt
+ *  without us tracking the shell. */
+function BrandMark({ size, className }) {
+  const [me, setMe] = useState(sessionCache.me)
+  useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
+  if (!me) {
+    return h('div', { className, style: { width: size, height: size, borderRadius: '50%', background: 'var(--dsw-alias-bg-layer-3)' } })
+  }
+  return h(UserAvatar, { username: me.username, size: size || 24 })
+}
+
+/** Sidebar brand name — host renders it beside the expanded mark only. */
+function BrandName() {
+  const [me, setMe] = useState(sessionCache.me)
+  useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
+  return h('span', { className: 'um-brand-name', title: me ? me.username : '' }, me ? me.username : '')
 }
 
 // ── components ────────────────────────────────────────────────────────────
@@ -335,28 +400,29 @@ function UsersTab({ me, __t: t, flash }) {
     h('div', { className: 'um-head', style: { marginBottom: 10 } },
       h('h3', { className: 'um-title' }, interpolate(t('userCount'), { n: users.length })),
       h('button', { className: 'um-btn', onClick: load }, t('reload'))),
-    h('table', { className: 'um-table' },
-      h('thead', null, h('tr', null,
-        h('th', null, t('colUser')),
-        h('th', null, t('colRole')),
-        h('th', null, t('colCreatedAt')),
-        h('th', null, t('colLastLogin')),
-        h('th', null, ''))),
-      h('tbody', null, users.map((user) => h('tr', { key: user.id },
-        h('td', null, user.username, user.id === me.id ? t('you') : null),
-        h('td', null, h(RoleBadge, { role: user.role, __t: t })),
-        h('td', { className: 'um-muted' }, formatTime(user.createdAt)),
-        h('td', { className: 'um-muted' }, formatTime(user.lastLoginAt)),
-        h('td', null, h('div', { className: 'um-row', style: { justifyContent: 'flex-end' } },
-          h('button', { className: 'um-btn', disabled: busyId === user.id, onClick: () => resetPwd(user) }, t('actionResetPwd')),
-          h('button', {
-            className: 'um-btn', disabled: busyId === user.id || user.id === me.id,
-            title: user.id === me.id ? '-' : undefined, onClick: () => changeRole(user),
-          }, user.role === 'admin' ? t('actionSetUser') : t('actionSetAdmin')),
-          h('button', {
-            className: 'um-btn um-btn-danger', disabled: busyId === user.id || user.id === me.id,
-            onClick: () => remove(user),
-          }, t('actionDelete')))))))),
+    h('div', { className: 'um-table-wrap' },
+      h('table', { className: 'um-table' },
+        h('thead', null, h('tr', null,
+          h('th', null, t('colUser')),
+          h('th', null, t('colRole')),
+          h('th', null, t('colCreatedAt')),
+          h('th', null, t('colLastLogin')),
+          h('th', null, ''))),
+        h('tbody', null, users.map((user) => h('tr', { key: user.id },
+          h('td', null, user.username, user.id === me.id ? t('you') : null),
+          h('td', null, h(RoleBadge, { role: user.role, __t: t })),
+          h('td', { className: 'um-muted' }, formatTime(user.createdAt)),
+          h('td', { className: 'um-muted' }, formatTime(user.lastLoginAt)),
+          h('td', null, h('div', { className: 'um-row', style: { justifyContent: 'flex-end' } },
+            h('button', { className: 'um-btn', disabled: busyId === user.id, onClick: () => resetPwd(user) }, t('actionResetPwd')),
+            h('button', {
+              className: 'um-btn', disabled: busyId === user.id || user.id === me.id,
+              title: user.id === me.id ? '-' : undefined, onClick: () => changeRole(user),
+            }, user.role === 'admin' ? t('actionSetUser') : t('actionSetAdmin')),
+            h('button', {
+              className: 'um-btn um-btn-danger', disabled: busyId === user.id || user.id === me.id,
+              onClick: () => remove(user),
+            }, t('actionDelete'))))))))),
     temp && h(UmDialog, {
       title: t('tempPwdTitle'), onClose: () => setTemp(null),
       footer: [
@@ -394,32 +460,51 @@ function ActivityTab({ kind, __t: t }) {
       ? h('div', { className: 'um-muted' }, t('loading'))
       : visible.length === 0
         ? h('div', { className: 'um-muted' }, t('empty'))
-        : h('table', { className: 'um-table' },
-          h('thead', null, h('tr', null,
-            h('th', null, t('colTime')),
-            h('th', null, t('colType')),
-            h('th', null, t('colUser')),
-            h('th', null, t('colIp')),
-            h('th', null, t('colDetail')))),
-          h('tbody', null, visible.map((entry, i) => h('tr', { key: i },
-            h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
-            h('td', null, t(TYPE_LABELS[entry.type] || entry.type)),
-            h('td', null, entry.username || '-'),
-            h('td', { className: 'um-muted' }, entry.ip || '-'),
-            h('td', { className: 'um-muted' }, entry.detail || '-'))))))
+        : h('div', { className: 'um-table-wrap' },
+          h('table', { className: 'um-table' },
+            h('thead', null, h('tr', null,
+              h('th', null, t('colTime')),
+              h('th', null, t('colType')),
+              h('th', null, t('colUser')),
+              h('th', null, t('colIp')),
+              h('th', null, t('colDetail')))),
+            h('tbody', null, visible.map((entry, i) => h('tr', { key: i },
+              h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
+              h('td', null, t(TYPE_LABELS[entry.type] || entry.type)),
+              h('td', null, entry.username || '-'),
+              h('td', { className: 'um-muted' }, entry.ip || '-'),
+              h('td', { className: 'um-muted' }, entry.detail || '-')))))))
 }
 
 /** Admin-only operation audit: every gated API call / WS connection with
- *  its response status, filterable by username, method, path and status. */
-function AuditTab({ __t: t }) {
+ *  its response status, filterable by username, method, path and status.
+ *  Rows can be deleted individually; the whole ledger can be cleared. */
+function AuditTab({ __t: t, flash }) {
   const [entries, setEntries] = useState(null)
   const [username, setUsername] = useState('')
   const [method, setMethod] = useState('')
   const [path, setPath] = useState('')
   const [statusClass, setStatusClass] = useState('')
+  const [busyId, setBusyId] = useState(null)
 
   const load = () => api('/audit?limit=500').then((d) => setEntries(d.entries)).catch(() => setEntries([]))
   useEffect(() => { load() }, [])
+
+  const del = (entry) => {
+    if (!window.confirm(t('delEntryConfirm'))) return
+    setBusyId(entry.id)
+    api(`/audit/${entry.id}`, { method: 'DELETE' })
+      .then(() => { flash(t('entryDeleted')); return load() })
+      .catch((e) => flash(t('failed') + e.message))
+      .finally(() => setBusyId(null))
+  }
+
+  const clearAll = () => {
+    if (!window.confirm(t('clearLogConfirm'))) return
+    api('/audit', { method: 'DELETE' })
+      .then(() => { flash(t('auditCleared')); return load() })
+      .catch((e) => flash(t('failed') + e.message))
+  }
 
   const visible = useMemo(
     () => filterAudit(entries, { username: username.trim() || null, method: method || null, path: path.trim() || null, statusClass: statusClass || null }),
@@ -443,26 +528,34 @@ function AuditTab({ __t: t }) {
           h('option', { value: '2' }, t('statusOk')),
           h('option', { value: '4' }, t('statusErr')),
           h('option', { value: '5' }, t('statusErr')))),
-      h('button', { className: 'um-btn', onClick: load }, t('reload'))),
+      h('div', { className: 'um-row' },
+        h('button', { className: 'um-btn', onClick: load }, t('reload')),
+        h('button', { className: 'um-btn um-btn-danger', disabled: !entries || entries.length === 0, onClick: clearAll }, t('clearLog')))),
     entries === null
       ? h('div', { className: 'um-muted' }, t('loading'))
       : visible.length === 0
         ? h('div', { className: 'um-muted' }, t('empty'))
-        : h('table', { className: 'um-table' },
-          h('thead', null, h('tr', null,
-            h('th', null, t('colTime')),
-            h('th', null, t('colMethod')),
-            h('th', null, t('colPath')),
-            h('th', null, t('colUser')),
-            h('th', null, t('colIp')),
-            h('th', null, t('colStatus')))),
-          h('tbody', null, visible.map((entry, i) => h('tr', { key: i },
-            h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
-            h('td', null, entry.type === 'ws' ? t('typeWsConn') : entry.method || '-'),
-            h('td', { className: 'um-muted', style: { wordBreak: 'break-all' } }, entry.path || '-'),
-            h('td', null, entry.username || '-'),
-            h('td', { className: 'um-muted' }, entry.ip || '-'),
-            h('td', null, entry.type === 'ws' ? h('span', { className: 'um-badge' }, t('typeWsConn')) : statusBadge(entry.status)))))))
+        : h('div', { className: 'um-table-wrap' },
+          h('table', { className: 'um-table' },
+            h('thead', null, h('tr', null,
+              h('th', null, t('colTime')),
+              h('th', null, t('colMethod')),
+              h('th', null, t('colPath')),
+              h('th', null, t('colUser')),
+              h('th', null, t('colIp')),
+              h('th', null, t('colStatus')),
+              h('th', null, ''))),
+            h('tbody', null, visible.map((entry, i) => h('tr', { key: i },
+              h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
+              h('td', null, entry.type === 'ws' ? t('typeWsConn') : entry.method || '-'),
+              h('td', { className: 'um-muted', style: { wordBreak: 'break-all' } }, entry.path || '-'),
+              h('td', null, entry.username || '-'),
+              h('td', { className: 'um-muted' }, entry.ip || '-'),
+              h('td', null, entry.type === 'ws' ? h('span', { className: 'um-badge' }, t('typeWsConn')) : statusBadge(entry.status)),
+              h('td', null, h('button', {
+                className: 'um-btn um-btn-danger', disabled: busyId === entry.id,
+                onClick: () => del(entry),
+              }, t('actionDelete')))))))))
 }
 
 function MyPanel({ me, __t: t, flash }) {
@@ -507,15 +600,16 @@ function MyPanel({ me, __t: t, flash }) {
         ? h('div', { className: 'um-muted' }, t('loading'))
         : entries.length === 0
           ? h('div', { className: 'um-muted' }, t('empty'))
-          : h('table', { className: 'um-table' },
-            h('thead', null, h('tr', null,
-              h('th', null, t('colTime')),
-              h('th', null, t('colType')),
-              h('th', null, t('colIp')))),
-            h('tbody', null, entries.map((entry, i) => h('tr', { key: i },
-              h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
-              h('td', null, t(TYPE_LABELS[entry.type] || entry.type)),
-              h('td', { className: 'um-muted' }, entry.ip || '-')))))))
+          : h('div', { className: 'um-table-wrap' },
+            h('table', { className: 'um-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, t('colTime')),
+                h('th', null, t('colType')),
+                h('th', null, t('colIp')))),
+              h('tbody', null, entries.map((entry, i) => h('tr', { key: i },
+                h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, formatTime(entry.ts)),
+                h('td', null, t(TYPE_LABELS[entry.type] || entry.type)),
+                h('td', { className: 'um-muted' }, entry.ip || '-'))))))))
 }
 
 function UserManagementSection({ __t: t }) {
@@ -529,7 +623,7 @@ function UserManagementSection({ __t: t }) {
     toastTimer.current = setTimeout(() => setToast(''), 2400)
   }
   useEffect(() => {
-    api('/session').then((d) => setMe(d.user)).catch(() => setMe(null))
+    loadMeCached().then((user) => setMe(user))
   }, [])
 
   return h('div', { className: 'um-wrap' },
@@ -548,7 +642,7 @@ function AdminPanel({ me, __t: t, flash }) {
     h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
       h('button', { key, className: tab === key ? 'um-tab active' : 'um-tab', onClick: () => setTab(key) }, label))),
     tab === 'users' ? h(UsersTab, { me, __t: t, flash })
-      : tab === 'auditLog' ? h(AuditTab, { __t: t })
+      : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
         : h(ActivityTab, { kind: tab, __t: t }))
 }
 
@@ -563,11 +657,20 @@ module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
   __boot,
-  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit },
+  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName },
   apply(ctx) {
     ctx.locale.register(NS, 'zh', ZH)
     ctx.locale.register(NS, 'en', EN)
     const t = ctx.locale.bind(NS)
+    ctx.effect(() => {
+      // Official-brand pattern: nested injects claim both brand seats, one
+      // generator registers them. The mark shows in expanded row + collapsed
+      // rail (fold-adaptive), the name only beside the expanded mark.
+      ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.inject('sidebar.brand.name', function* () {
+        yield ctx.slots.register({ name: 'sidebar.brand.mark' }, BrandMark)
+        yield ctx.slots.register({ name: 'sidebar.brand.name' }, BrandName)
+      }))
+    }, 'user-management: sidebar brand')
     ctx.effect(() => {
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',

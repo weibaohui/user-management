@@ -51,20 +51,43 @@ test('apply registers dictionaries and the settings.section slot', () => {
       bind: (ns) => (key, vars) => `${ns}:${key}`,
     },
     slots: {
-      inject: (name, fn) => fn(),
+      inject: (name, fn) => {
+        const result = fn()
+        // generator factories (official brand-slot pattern) register lazily
+        if (result && typeof result[Symbol.iterator] === 'function') [...result]
+        return result
+      },
       register: (spec, component) => registered.push({ spec, component }),
     },
     effect: (fn) => fn(),
   }
   plugin.apply(ctx)
   assert.deepEqual(calls.map((c) => [c[0], c[1]]).sort(), [[NS, 'en'], [NS, 'zh']])
-  assert.equal(registered.length, 1)
-  const { spec, component } = registered[0]
-  assert.equal(spec.name, 'settings.section')
-  assert.equal(spec.id, plugin.name)
-  assert.equal(typeof spec.inject, 'function')
-  assert.equal(typeof spec.label, 'function')
-  assert.equal(typeof component, 'function')
+  const names = registered.map((r) => r.spec.name).sort()
+  assert.deepEqual(names, ['settings.section', 'sidebar.brand.mark', 'sidebar.brand.name'])
+  for (const { spec, component } of registered) {
+    assert.equal(typeof component, 'function')
+    if (spec.name === 'settings.section') {
+      assert.equal(spec.id, plugin.name)
+      assert.equal(typeof spec.inject, 'function')
+      assert.equal(typeof spec.label, 'function')
+    }
+  }
+})
+
+test('brand slots render the avatar mark and the username', async () => {
+  const { BrandMark, BrandName, UserAvatar, avatarHue } = plugin.__internals
+  assert.equal(typeof avatarHue('alice'), 'number')
+  assert.equal(avatarHue('alice'), avatarHue('alice'), 'deterministic hue per username')
+  const avatar = UserAvatar({ username: 'bob', size: 30 })
+  assert.ok(String(avatar.props.style.background).startsWith('hsl('), 'hsl background, no hex')
+  // the plain-Node shim stores kids on the element, real React on props.children
+  const initial = avatar.props.children !== undefined ? avatar.props.children : (avatar.kids || [])[0]
+  assert.equal(initial, 'B', 'initial letter')
+  assert.equal(avatar.props.title, 'bob')
+  // mark with a resolved session renders the avatar; without, a placeholder
+  const markEl = BrandMark({ size: 28 })
+  assert.ok(markEl, 'mark renders a placeholder while the session loads')
 })
 
 test('formatTime humanizes timestamps, dashes on empty', () => {

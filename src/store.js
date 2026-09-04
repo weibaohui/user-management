@@ -119,6 +119,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
   let sessionsDoc = { tokens: {} }
   let ledgerLines = 0
   let auditLines = 0
+  let auditSeq = 0
   const writeChain = { users: Promise.resolve(), sessions: Promise.resolve(), ledger: Promise.resolve(), audit: Promise.resolve() }
 
   function atomicWrite(file, content) {
@@ -164,7 +165,18 @@ function createStore({ home, now = () => Date.now() } = {}) {
       if (!sessionsDoc.tokens[token] || sessionsDoc.tokens[token].expiresAt <= ts) delete sessionsDoc.tokens[token]
     }
     try { ledgerLines = (await fsP.readFile(activityFile, 'utf8')).split('\n').filter((l) => l.trim() !== '').length } catch { ledgerLines = 0 }
-    try { auditLines = (await fsP.readFile(auditFile, 'utf8')).split('\n').filter((l) => l.trim() !== '').length } catch { auditLines = 0 }
+    try {
+      const raw = await fsP.readFile(auditFile, 'utf8')
+      const lines = raw.split('\n').filter((l) => l.trim() !== '')
+      auditLines = lines.length
+      for (const line of lines) {
+        try {
+          const id = JSON.parse(line).id
+          const match = typeof id === 'string' ? /^a(\d+)$/.exec(id) : null
+          if (match) auditSeq = Math.max(auditSeq, Number(match[1]))
+        } catch { /* skip malformed line */ }
+      }
+    } catch { auditLines = 0 }
     return { users: usersDoc.users.length, sessions: Object.keys(sessionsDoc.tokens).length }
   }
 
@@ -369,9 +381,11 @@ function createStore({ home, now = () => Date.now() } = {}) {
 
   /** Operation audit: every gated API/WebSocket action of a signed-in user. */
   async function appendAudit(entry) {
+    const id = `a${++auditSeq}`
     return appendJsonl({
       file: auditFile,
       line: JSON.stringify({
+        id,
         ts: now(),
         type: entry.type || 'api',
         username: entry.username || null,
@@ -385,6 +399,39 @@ function createStore({ home, now = () => Date.now() } = {}) {
       setLines: (n) => { auditLines = n },
       cap: MAX_AUDIT_LINES,
     })
+  }
+
+  /** Remove one audit entry by id (admin manual cleanup). */
+  async function removeAuditEntry(id) {
+    const run = writeChain.ledger.then(async () => {
+      let raw = ''
+      try { raw = await fsP.readFile(auditFile, 'utf8') } catch { return false }
+      const lines = raw.split('\n').filter((l) => l.trim() !== '')
+      const kept = []
+      let removed = false
+      for (const line of lines) {
+        try {
+          if (JSON.parse(line).id === id) { removed = true; continue }
+        } catch { /* keep malformed lines as-is */ }
+        kept.push(line)
+      }
+      if (!removed) return false
+      auditLines = kept.length
+      await atomicWrite(auditFile, kept.length === 0 ? '' : kept.join('\n') + '\n')
+      return true
+    })
+    writeChain.ledger = run.catch(() => {})
+    return run
+  }
+
+  /** Drop the entire audit ledger (admin manual cleanup). */
+  async function clearAudit() {
+    const run = writeChain.ledger.then(async () => {
+      auditLines = 0
+      await atomicWrite(auditFile, '')
+    })
+    writeChain.ledger = run.catch(() => {})
+    return run
   }
 
   /**
@@ -440,7 +487,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     // sessions
     createSession, resolveSession, dropSession, dropUserSessions, pruneSessions,
     // ledger
-    appendActivity, listActivity, appendAudit, listAudit,
+    appendActivity, listActivity, appendAudit, listAudit, removeAuditEntry, clearAudit,
     // internals for tests
     __files: { dir, usersFile, sessionsFile, activityFile, auditFile },
     __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines, auditLines }),
