@@ -246,6 +246,14 @@ window.__ModuleLoader__.load({
     .um-brand-name { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 150px; }
     .um-logout { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 6px 10px; border-radius: 7px; cursor: pointer; flex: none; }
     .um-logout:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-state-error-primary); }
+    .um-user-menu { min-width: 216px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 6px; }
+    .um-user-menu-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+    .um-user-menu-name { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .um-user-menu-sep { height: 1px; background: var(--dsw-alias-border-l1); margin: 4px 6px; }
+    .um-user-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--dsw-alias-label-primary); font-size: 12.5px; padding: 8px 10px; border-radius: 7px; cursor: pointer; text-align: left; }
+    .um-user-menu-item:hover { background: var(--dsw-alias-interactive-bg-hover); }
+    .um-user-menu-logout { color: var(--dsw-alias-state-error-primary); }
+    .um-user-menu-logout:hover { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }
     .um-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 14px 16px; }
     .um-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .um-title { font-size: 14px; font-weight: 600; margin: 0; }
@@ -338,15 +346,25 @@ window.__ModuleLoader__.load({
 
     /** Sidebar brand mark — host renders it in the expanded brand row AND the
      *  collapsed rail (owner supplies the square `size`), so fold states adapt
-     *  without us tracking the shell. */
+     *  without us tracking the shell. Clicking it (or the name) opens the
+     *  user menu; sign-out sits at the bottom in red. */
     function BrandMark({ size, className }) {
       useEffect(ensureStyles, [])
       const [me, setMe] = useState(sessionCache.me)
       useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
+      const { toggle, menu } = useUserMenu(me)
       if (!me) {
         return h('div', { className, style: { width: size, height: size, borderRadius: '50%', background: 'var(--dsw-alias-bg-layer-3)' } })
       }
-      return h(UserAvatar, { username: me.username, size: size || 24 })
+      return h('div', {
+        className,
+        style: { cursor: 'pointer', display: 'inline-flex', borderRadius: '50%' },
+        title: me.username,
+        'aria-haspopup': 'menu',
+        onClick: toggle,
+      },
+        h(UserAvatar, { username: me.username, size: size || 24 }),
+        menu)
     }
 
     /** Sidebar brand name — host renders it beside the expanded mark only. */
@@ -354,18 +372,29 @@ window.__ModuleLoader__.load({
       useEffect(ensureStyles, [])
       const [me, setMe] = useState(sessionCache.me)
       useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
-      return h('span', { className: 'um-brand-name', title: me ? me.username : '' }, me ? me.username : '')
+      const { toggle, menu } = useUserMenu(me)
+      return h('span', {
+        className: 'um-brand-name',
+        style: { cursor: 'pointer' },
+        title: me ? me.username : '',
+        'aria-haspopup': 'menu',
+        onClick: toggle,
+      }, me ? me.username : '', menu)
     }
 
     // ── logout ────────────────────────────────────────────────────────────────
+
+    /** Locale accessor for slot components living outside apply()'s closure —
+     *  updated when apply() binds the real dictionary; zh until then. */
+    let localeT = (key) => ZH[key] || key
 
     function doLogout() {
       // clearing the session makes the gate bounce the next navigation to /login
       api('/logout', { method: 'POST' }).catch(() => {}).finally(() => { location.href = '/login' })
     }
 
-    function PowerIcon() {
-      return h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'aria-hidden': 'true' },
+    function PowerIcon({ size = 14 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'aria-hidden': 'true' },
         h('path', { d: 'M18.36 6.64a9 9 0 1 1-12.73 0' }),
         h('line', { x1: 12, y1: 2, x2: 12, y2: 12 }))
     }
@@ -380,10 +409,57 @@ window.__ModuleLoader__.load({
       }, PowerIcon(), withLabel ? t('actionLogout') : null)
     }
 
-    /** Sidebar footer action: a quiet power icon that reddens on hover.
-     *  Icon-only (title carries the name) so it fits both fold states. */
-    function FooterLogoutSlot() {
-      return h(LogoutButton, { withLabel: false, __t: (key) => ZH[key] || key })
+    /** The user menu popped from the brand row: identity header, separator,
+     *  and the red sign-out as the last item. Portaled to <body> so sidebar
+     *  overflow can't clip it. */
+    function UserMenu({ anchor, username, role, onClose }) {
+      const ref = useRef(null)
+      const t = localeT
+      useEffect(() => {
+        const onDoc = (e) => {
+          if (ref.current && !ref.current.contains(e.target) && anchor && !anchor.contains(e.target)) onClose()
+        }
+        const onKey = (e) => { if (e.key === 'Escape') onClose() }
+        document.addEventListener('mousedown', onDoc)
+        document.addEventListener('keydown', onKey)
+        return () => {
+          document.removeEventListener('mousedown', onDoc)
+          document.removeEventListener('keydown', onKey)
+        }
+      }, [anchor, onClose])
+      const rect = anchor ? anchor.getBoundingClientRect() : { left: 8, bottom: 8, right: 8 }
+      const MENU_WIDTH = 216
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - MENU_WIDTH - 8))
+      const style = { position: 'fixed', left, top: rect.bottom + 6, width: MENU_WIDTH }
+      return RDP && typeof RDP.createPortal === 'function'
+        ? RDP.createPortal(
+          h('div', { className: 'um-user-menu', ref, style, role: 'menu' },
+            h('div', { className: 'um-user-menu-head' },
+              h(UserAvatar, { username, size: 30 }),
+              h('div', { style: { minWidth: 0 } },
+                h('div', { className: 'um-user-menu-name', title: username }, username),
+                h('div', { style: { marginTop: 3 } }, h(RoleBadge, { role, __t: t })))),
+            h('div', { className: 'um-user-menu-sep' }),
+            h('button', {
+              className: 'um-user-menu-item um-user-menu-logout',
+              role: 'menuitem',
+              onClick: () => { onClose(); doLogout() },
+            }, PowerIcon(), t('actionLogout'))),
+          document.body)
+        : null
+    }
+
+    /** Shared click-to-open behaviour for both brand seats. */
+    function useUserMenu(me) {
+      const [anchor, setAnchor] = useState(null)
+      const toggle = (e) => {
+        e.stopPropagation()
+        setAnchor((current) => (current ? null : e.currentTarget))
+      }
+      const menu = (anchor && me)
+        ? h(UserMenu, { anchor, username: me.username, role: me.role, onClose: () => setAnchor(null) })
+        : null
+      return { toggle, menu }
     }
 
     // ── components ────────────────────────────────────────────────────────────
@@ -714,6 +790,7 @@ window.__ModuleLoader__.load({
         ctx.locale.register(NS, 'zh', ZH)
         ctx.locale.register(NS, 'en', EN)
         const t = ctx.locale.bind(NS)
+        localeT = t
         ctx.effect(() => {
           // Official-brand pattern: nested injects claim both brand seats, one
           // generator registers them. The mark shows in expanded row + collapsed
@@ -726,14 +803,6 @@ window.__ModuleLoader__.load({
             yield ctx.slots.register({ name: 'sidebar.brand.name', priority: -1 }, BrandName)
           }))
         }, 'user-management: sidebar brand')
-        ctx.effect(() => {
-          ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-            name: 'sidebar.footer.action',
-            id: CLIENT_NAME,
-            order: 40,
-            locale: NS,
-          }, FooterLogoutSlot))
-        }, 'user-management: sidebar logout')
         ctx.effect(() => {
           ctx.slots.inject('settings.section', () => ctx.slots.register({
             name: 'settings.section',
