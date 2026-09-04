@@ -514,7 +514,7 @@ window.__ModuleLoader__.load({
         title: t('actionLogout'),
         'aria-label': t('actionLogout'),
         onClick: doLogout,
-      }, PowerIcon(), withLabel ? t('actionLogout') : null)
+      }, h(PowerIcon), withLabel ? t('actionLogout') : null)
     }
 
     /** Self-service password change — the admin panel has no inline form
@@ -594,13 +594,13 @@ window.__ModuleLoader__.load({
               className: 'um-user-menu-item',
               role: 'menuitem',
               onClick: () => { onClose(); onChangePwd() },
-            }, KeyIcon(), t('changePwd')),
+            }, h(KeyIcon), t('changePwd')),
             h('div', { className: 'um-user-menu-sep' }),
             h('button', {
               className: 'um-user-menu-item um-user-menu-logout',
               role: 'menuitem',
               onClick: () => { onClose(); doLogout() },
-            }, PowerIcon(), t('actionLogout'))),
+            }, h(PowerIcon), t('actionLogout'))),
           document.body)
         : null
     }
@@ -610,6 +610,11 @@ window.__ModuleLoader__.load({
       const [anchor, setAnchor] = useState(null)
       const [pwdOpen, setPwdOpen] = useState(false)
       const toggle = (e) => {
+        // The menu/dialog are React children of this element but portal their
+        // DOM to <body> — their clicks bubble through the React tree and would
+        // toggle the menu a second time. Only clicks that physically originate
+        // inside the brand element may toggle.
+        if (!e.currentTarget.contains(e.target)) return
         e.stopPropagation()
         // React nulls e.currentTarget after dispatch; the updater may run later,
         // so capture the element first or the anchor silently stays null.

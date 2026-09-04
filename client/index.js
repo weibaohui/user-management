@@ -504,7 +504,7 @@ function LogoutButton({ withLabel, __t: t }) {
     title: t('actionLogout'),
     'aria-label': t('actionLogout'),
     onClick: doLogout,
-  }, PowerIcon(), withLabel ? t('actionLogout') : null)
+  }, h(PowerIcon), withLabel ? t('actionLogout') : null)
 }
 
 /** Self-service password change — the admin panel has no inline form
@@ -584,13 +584,13 @@ function UserMenu({ anchor, username, role, onClose, onChangePwd }) {
           className: 'um-user-menu-item',
           role: 'menuitem',
           onClick: () => { onClose(); onChangePwd() },
-        }, KeyIcon(), t('changePwd')),
+        }, h(KeyIcon), t('changePwd')),
         h('div', { className: 'um-user-menu-sep' }),
         h('button', {
           className: 'um-user-menu-item um-user-menu-logout',
           role: 'menuitem',
           onClick: () => { onClose(); doLogout() },
-        }, PowerIcon(), t('actionLogout'))),
+        }, h(PowerIcon), t('actionLogout'))),
       document.body)
     : null
 }
@@ -600,6 +600,11 @@ function useUserMenu(me) {
   const [anchor, setAnchor] = useState(null)
   const [pwdOpen, setPwdOpen] = useState(false)
   const toggle = (e) => {
+    // The menu/dialog are React children of this element but portal their
+    // DOM to <body> — their clicks bubble through the React tree and would
+    // toggle the menu a second time. Only clicks that physically originate
+    // inside the brand element may toggle.
+    if (!e.currentTarget.contains(e.target)) return
     e.stopPropagation()
     // React nulls e.currentTarget after dispatch; the updater may run later,
     // so capture the element first or the anchor silently stays null.
