@@ -638,7 +638,7 @@ window.__ModuleLoader__.load({
                   title: user.id === me.id ? '-' : undefined, onClick: () => changeRole(user),
                 }, user.role === 'admin' ? t('actionSetUser') : t('actionSetAdmin')),
                 h('button', {
-                  className: disabling ? 'um-btn um-btn-danger' : 'um-btn',
+                  className: user.disabled ? 'um-btn' : 'um-btn um-btn-danger',
                   disabled: busyId === user.id || user.id === me.id,
                   title: user.id === me.id ? '-' : undefined,
                   onClick: () => toggleDisabled(user),
