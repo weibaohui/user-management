@@ -61,20 +61,21 @@ const PAGE_SCRIPT = `
   var hasUsers = __HAS_USERS__;
   var loginForm = document.getElementById('login-form');
   var registerForm = document.getElementById('register-form');
-  var err = document.getElementById('err');
   function show(tab) {
     loginForm.style.display = tab === 'login' ? '' : 'none';
     registerForm.style.display = tab === 'register' ? '' : 'none';
     document.getElementById('tab-login').classList.toggle('active', tab === 'login');
     document.getElementById('tab-register').classList.toggle('active', tab === 'register');
-    err.textContent = '';
+    loginForm.querySelector('.err').textContent = '';
+    registerForm.querySelector('.err').textContent = '';
   }
   document.getElementById('tab-login').addEventListener('click', function () { show('login') });
   document.getElementById('tab-register').addEventListener('click', function () { show('register') });
   function submit(form, path, body) {
+    var errEl = form.querySelector('.err');
     var button = form.querySelector('.submit');
     button.disabled = true;
-    err.textContent = '';
+    errEl.textContent = '';
     fetch(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -83,10 +84,10 @@ const PAGE_SCRIPT = `
       return res.json().catch(function () { return {} }).then(function (data) { return { ok: res.ok, data: data } });
     }).then(function (result) {
       if (result.ok) { location.href = '/'; return; }
-      err.textContent = (result.data && result.data.error) || '请求失败';
+      errEl.textContent = (result.data && result.data.error) || '请求失败';
       button.disabled = false;
     }).catch(function () {
-      err.textContent = '网络错误';
+      errEl.textContent = '网络错误';
       button.disabled = false;
     });
   }
@@ -99,9 +100,10 @@ const PAGE_SCRIPT = `
   });
   registerForm.addEventListener('submit', function (e) {
     e.preventDefault();
+    var errEl = registerForm.querySelector('.err');
     var password = document.getElementById('reg-password').value;
     if (password !== document.getElementById('reg-password2').value) {
-      err.textContent = '两次输入的密码不一致';
+      errEl.textContent = '两次输入的密码不一致';
       return;
     }
     submit(registerForm, '/user-management/api/register', {
@@ -133,11 +135,11 @@ function renderLoginPage({ hasUsers, title = 'DSH 控制台' } = {}) {
     '<form id="login-form">\n' +
     '<label for="login-username">用户名</label>\n<input id="login-username" autocomplete="username" required>\n' +
     '<label for="login-password">密码</label>\n<input id="login-password" type="password" autocomplete="current-password" required>\n' +
-    '<div class="err" id="err"></div>\n' +
+    '<div class="err"></div>\n' +
     '<button class="submit" type="submit">登录</button>\n</form>\n' +
     '<form id="register-form" style="display:none">\n' +
     '<label for="reg-username">用户名</label>\n<input id="reg-username" autocomplete="username" required>\n' +
-    '<label for="reg-password">密码（至少 6 位）</label>\n<input id="reg-password" type="password" autocomplete="new-password" required>\n' +
+    '<label for="reg-password">密码（至少 6 位）</label>\n<input id="reg-password" type="password" autocomplete="new-password" minlength="6" required>\n' +
     '<label for="reg-password2">确认密码</label>\n<input id="reg-password2" type="password" autocomplete="new-password" required>\n' +
     '<div class="err"></div>\n' +
     '<button class="submit" type="submit">注册并登录</button>\n' +
