@@ -146,3 +146,19 @@ test('canBanIp hides loopback, own IP and empty entries', () => {
   assert.equal(canBanIp('', '127.0.0.1'), false, 'empty')
   assert.equal(canBanIp('-', ''), false, 'placeholder dash')
 })
+
+test('change-password dialog carries old/new/confirm inputs', () => {
+  const { ChangePasswordDialog } = plugin.__internals
+  const el = ChangePasswordDialog({ onClose: () => {}, __t: (k) => k })
+  assert.ok(el, 'renders the dialog element (portal is a web-only no-op under the shim)')
+  const inputs = []
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (node.type === 'input' && node.props.type === 'password') inputs.push(node)
+    for (const kid of node.kids || []) walk(kid)
+  }
+  walk(el)
+  assert.equal(inputs.length, 3, 'old + new + confirm password fields')
+  assert.ok(inputs.every((i) => i.props.required), 'all three required')
+  assert.equal(inputs[1].props.minLength, 6, 'native length gate on the new password')
+})

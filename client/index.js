@@ -444,7 +444,7 @@ function BrandMark({ size, className }) {
   useEffect(ensureStyles, [])
   const [me, setMe] = useState(sessionCache.me)
   useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
-  const { toggle, menu } = useUserMenu(me)
+  const { toggle, menu, dialog } = useUserMenu(me)
   if (!me) {
     return h('div', { className, style: { width: size, height: size, borderRadius: '50%', background: 'var(--dsw-alias-bg-layer-3)' } })
   }
@@ -456,7 +456,8 @@ function BrandMark({ size, className }) {
     onClick: toggle,
   },
     h(UserAvatar, { username: me.username, size: size || 24 }),
-    menu)
+    menu,
+    dialog)
 }
 
 /** Sidebar brand name — host renders it beside the expanded mark only. */
@@ -464,14 +465,14 @@ function BrandName() {
   useEffect(ensureStyles, [])
   const [me, setMe] = useState(sessionCache.me)
   useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
-  const { toggle, menu } = useUserMenu(me)
+  const { toggle, menu, dialog } = useUserMenu(me)
   return h('span', {
     className: 'um-brand-name',
     style: { cursor: 'pointer' },
     title: me ? me.username : '',
     'aria-haspopup': 'menu',
     onClick: toggle,
-  }, me ? me.username : '', menu)
+  }, me ? me.username : '', menu, dialog)
 }
 
 // ── logout ────────────────────────────────────────────────────────────────
@@ -491,6 +492,11 @@ function PowerIcon({ size = 14 }) {
     h('line', { x1: 12, y1: 2, x2: 12, y2: 12 }))
 }
 
+function KeyIcon({ size = 14 }) {
+  return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' },
+    h('path', { d: 'M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4' }))
+}
+
 function LogoutButton({ withLabel, __t: t }) {
   useEffect(ensureStyles, [])
   return h('button', {
@@ -498,13 +504,55 @@ function LogoutButton({ withLabel, __t: t }) {
     title: t('actionLogout'),
     'aria-label': t('actionLogout'),
     onClick: doLogout,
-  }, h(PowerIcon), withLabel ? t('actionLogout') : null)
+  }, PowerIcon(), withLabel ? t('actionLogout') : null)
 }
 
-/** The user menu popped from the brand row: identity header, separator,
- *  and the red sign-out as the last item. Portaled to <body> so sidebar
- *  overflow can't clip it. */
-function UserMenu({ anchor, username, role, onClose }) {
+/** Self-service password change — the admin panel has no inline form
+ *  (MyPanel's one is for plain users), so this dialog is the shared
+ *  entry from the user menu. Portaled to <body> like the user menu. */
+function ChangePasswordDialog({ onClose, __t: t }) {
+  const [oldPwd, setOldPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [confirmPwd, setConfirmPwd] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [done, setDone] = useState(false)
+
+  const submit = (e) => {
+    e.preventDefault()
+    if (newPwd !== confirmPwd) { setErr(t('pwdMismatch')); return }
+    setBusy(true)
+    setErr('')
+    api('/me/password', { method: 'POST', body: { oldPassword: oldPwd, newPassword: newPwd } })
+      .then(() => { setDone(true); setTimeout(onClose, 1200) })
+      .catch((e2) => setErr(String(e2 && e2.message)))
+      .finally(() => setBusy(false))
+  }
+
+  const dialog = h(UmDialog, {
+    title: t('changePwd'), onClose,
+    footer: [
+      h('button', { className: 'um-btn', onClick: onClose }, '✕'),
+      h('button', { className: 'um-btn um-btn-primary', onClick: submit, disabled: busy || done }, t('save')),
+    ],
+  },
+    done
+      ? h('div', { style: { color: 'var(--dsw-alias-state-success-primary)', fontSize: 13, padding: '6px 0' } }, t('pwdChanged'))
+      : h('form', { className: 'um-form', onSubmit: submit, style: { maxWidth: 'none' } },
+        h('label', { htmlFor: 'um-cp-old' }, t('oldPwd')),
+        h('input', { id: 'um-cp-old', className: 'um-input', type: 'password', autoComplete: 'current-password', value: oldPwd, onChange: (e) => setOldPwd(e.target.value), required: true, autoFocus: true }),
+        h('label', { htmlFor: 'um-cp-new' }, t('newPwd')),
+        h('input', { id: 'um-cp-new', className: 'um-input', type: 'password', autoComplete: 'new-password', minLength: 6, value: newPwd, onChange: (e) => setNewPwd(e.target.value), required: true }),
+        h('label', { htmlFor: 'um-cp-conf' }, t('confirmPwd')),
+        h('input', { id: 'um-cp-conf', className: 'um-input', type: 'password', autoComplete: 'new-password', value: confirmPwd, onChange: (e) => setConfirmPwd(e.target.value), required: true }),
+        err && h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: 12 } }, err)))
+  return RDP && typeof RDP.createPortal === 'function' ? RDP.createPortal(dialog, document.body) : dialog
+}
+
+/** The user menu popped from the brand row: identity header, change
+ *  password, separator, and the red sign-out as the last item. Portaled
+ *  to <body> so sidebar overflow can't clip it. */
+function UserMenu({ anchor, username, role, onClose, onChangePwd }) {
   const ref = useRef(null)
   const t = localeT
   useEffect(() => {
@@ -533,10 +581,16 @@ function UserMenu({ anchor, username, role, onClose }) {
             h('div', { style: { marginTop: 3 } }, h(RoleBadge, { role, __t: t })))),
         h('div', { className: 'um-user-menu-sep' }),
         h('button', {
+          className: 'um-user-menu-item',
+          role: 'menuitem',
+          onClick: () => { onClose(); onChangePwd() },
+        }, KeyIcon(), t('changePwd')),
+        h('div', { className: 'um-user-menu-sep' }),
+        h('button', {
           className: 'um-user-menu-item um-user-menu-logout',
           role: 'menuitem',
           onClick: () => { onClose(); doLogout() },
-        }, h(PowerIcon), t('actionLogout'))),
+        }, PowerIcon(), t('actionLogout'))),
       document.body)
     : null
 }
@@ -544,6 +598,7 @@ function UserMenu({ anchor, username, role, onClose }) {
 /** Shared click-to-open behaviour for both brand seats. */
 function useUserMenu(me) {
   const [anchor, setAnchor] = useState(null)
+  const [pwdOpen, setPwdOpen] = useState(false)
   const toggle = (e) => {
     e.stopPropagation()
     // React nulls e.currentTarget after dispatch; the updater may run later,
@@ -552,9 +607,10 @@ function useUserMenu(me) {
     setAnchor((current) => (current ? null : target))
   }
   const menu = (anchor && me)
-    ? h(UserMenu, { anchor, username: me.username, role: me.role, onClose: () => setAnchor(null) })
+    ? h(UserMenu, { anchor, username: me.username, role: me.role, onClose: () => setAnchor(null), onChangePwd: () => setPwdOpen(true) })
     : null
-  return { toggle, menu }
+  const dialog = pwdOpen ? h(ChangePasswordDialog, { onClose: () => setPwdOpen(false), __t: localeT }) : null
+  return { toggle, menu, dialog }
 }
 
 // ── components ────────────────────────────────────────────────────────────
@@ -992,7 +1048,7 @@ module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
   __boot,
-  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton },
+  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu },
   apply(ctx) {
     ctx.locale.register(NS, 'zh', ZH)
     ctx.locale.register(NS, 'en', EN)
