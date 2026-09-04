@@ -244,14 +244,17 @@ const STYLE = `
 .um-tabs { display: flex; gap: 4px; background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 3px; width: max-content; }
 .um-tab { border: 0; background: transparent; color: var(--dsw-alias-label-secondary); border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
 .um-tab.active { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
-.um-table-wrap { border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; overflow: auto; }
-.um-table { width: 100%; border-collapse: collapse; }
-.um-table th { text-align: left; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); padding: 7px 10px; border-bottom: 1px solid var(--dsw-alias-border-l2); white-space: nowrap; }
-.um-table td { padding: 7px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); vertical-align: middle; }
+.um-table-wrap { border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; overflow: auto; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.um-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+.um-table th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); padding: 8px 12px; white-space: nowrap; border-bottom: 1px solid var(--dsw-alias-border-l2); position: sticky; top: 0; z-index: 1; }
+.um-table td { padding: 8px 12px; border-bottom: 1px solid var(--dsw-alias-border-l2); vertical-align: middle; color: var(--dsw-alias-label-primary); }
 .um-table tbody tr:last-child td { border-bottom: 0; }
 .um-table tbody tr:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.um-badge { display: inline-block; font-size: 11px; border-radius: 5px; padding: 1px 7px; border: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
-.um-badge-admin { color: var(--dsw-alias-state-business-primary); border-color: var(--dsw-alias-state-business-primary); }
+.um-empty { padding: 26px 0; text-align: center; color: var(--dsw-alias-label-tertiary); font-size: 12.5px; }
+.um-badge { display: inline-block; font-size: 11px; line-height: 1.5; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
+.um-badge-admin { color: var(--dsw-alias-state-business-primary); border-color: var(--dsw-alias-state-business-primary); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); }
+.um-badge-ok { color: var(--dsw-alias-state-success-primary); border-color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); }
+.um-badge-err { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
 .um-input { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border-radius: 7px; padding: 5px 9px; font-size: 12px; outline: none; }
 .um-input:focus { border-color: var(--dsw-alias-state-business-primary); }
 .um-form { display: flex; flex-direction: column; gap: 8px; max-width: 340px; }
@@ -323,6 +326,7 @@ function UserAvatar({ username, size = 22 }) {
  *  collapsed rail (owner supplies the square `size`), so fold states adapt
  *  without us tracking the shell. */
 function BrandMark({ size, className }) {
+  useEffect(ensureStyles, [])
   const [me, setMe] = useState(sessionCache.me)
   useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
   if (!me) {
@@ -333,6 +337,7 @@ function BrandMark({ size, className }) {
 
 /** Sidebar brand name — host renders it beside the expanded mark only. */
 function BrandName() {
+  useEffect(ensureStyles, [])
   const [me, setMe] = useState(sessionCache.me)
   useEffect(() => { loadMeCached().then((user) => setMe(user)) }, [])
   return h('span', { className: 'um-brand-name', title: me ? me.username : '' }, me ? me.username : '')
@@ -459,7 +464,7 @@ function ActivityTab({ kind, __t: t }) {
     entries === null
       ? h('div', { className: 'um-muted' }, t('loading'))
       : visible.length === 0
-        ? h('div', { className: 'um-muted' }, t('empty'))
+        ? h('div', { className: 'um-empty' }, t('empty'))
         : h('div', { className: 'um-table-wrap' },
           h('table', { className: 'um-table' },
             h('thead', null, h('tr', null,
@@ -511,7 +516,7 @@ function AuditTab({ __t: t, flash }) {
     [entries, username, method, path, statusClass])
 
   const statusBadge = (status) => {
-    const cls = status >= 400 ? 'um-badge um-btn-danger' : 'um-badge'
+    const cls = status >= 500 ? 'um-badge um-badge-err' : status >= 400 ? 'um-badge um-badge-err' : 'um-badge um-badge-ok'
     return h('span', { className: cls }, status ?? '-')
   }
 
@@ -534,7 +539,7 @@ function AuditTab({ __t: t, flash }) {
     entries === null
       ? h('div', { className: 'um-muted' }, t('loading'))
       : visible.length === 0
-        ? h('div', { className: 'um-muted' }, t('empty'))
+        ? h('div', { className: 'um-empty' }, t('empty'))
         : h('div', { className: 'um-table-wrap' },
           h('table', { className: 'um-table' },
             h('thead', null, h('tr', null,
@@ -599,7 +604,7 @@ function MyPanel({ me, __t: t, flash }) {
       entries === null
         ? h('div', { className: 'um-muted' }, t('loading'))
         : entries.length === 0
-          ? h('div', { className: 'um-muted' }, t('empty'))
+          ? h('div', { className: 'um-empty' }, t('empty'))
           : h('div', { className: 'um-table-wrap' },
             h('table', { className: 'um-table' },
               h('thead', null, h('tr', null,
