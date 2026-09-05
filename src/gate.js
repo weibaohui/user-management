@@ -1,21 +1,20 @@
 'use strict'
 
 /**
- * Global auth gate for the shared dsh node:http server.
+ * Pure auth-gate decision core for the user-management gateway.
  *
- * The host router (exact / longest-prefix / fallback) does not compose
- * middleware, and the `/api` + `/plugins` prefixes are already taken — so a
- * route-level gate can never cover them. The gate therefore re-orders
- * listeners on the public `webServer.server` instance: capture the existing
- * `request`/`upgrade` listeners, remove them, and install a gate that either
- * responds itself (unauthenticated) or replays the captured listeners
- * (authenticated / public path). This is a deliberate, documented hack; see
- * README "安全模型". A degraded route-level gateway (prefix `/` + passthrough
- * to the captured fallback handler) is provided for hosts where the server
- * instance is not reachable — it cannot cover `/api` + `/plugins`.
+ * The gateway listener (src/gateway-core.js) calls `createDecider(...)` on
+ * every request: it checks IP bans first (403, login page included), resolves
+ * the um_session cookie against the store, and returns the gate decision
+ * (allow / redirect-to-login / unauthorized / forbidden). The gateway then
+ * routes accordingly (local API/login page vs. reverse-proxy) and wires the
+ * audit hooks on response completion.
  *
- * The decision core is a pure function so tests can cover it without a
- * server; attachGate / installFallbackGate are thin machinery around it.
+ * Previously this module also installed a gate by re-ordering listeners on the
+ * shared dsh node:http server (attachGate / installFallbackGate / installGate).
+ * That shared-server gate is gone — the gateway listener IS the gate now, so
+ * the auth cannot be bypassed by hitting the loopback dsh web directly. Only
+ * the pure, testable decision core remains here.
  */
 
 const LOGIN_PAGE_PATH = '/login'
@@ -89,7 +88,7 @@ function gateDecision({ method, path, accept, sessionValid }) {
  * Two audit hooks:
  * - `onAccess(req, session, path)` fires for document navigations that pass
  *   the gate (the "access ledger");
- * - allow decisions carry `{ session, path }` so attachGate can record the
+ * - allow decisions carry `{ session, path }` so the gateway can record the
  *   operation audit (API/WebSocket) once the response completes.
  */
 function createDecider({ resolveSession, onAccess, getClientIp, isBanned }) {
@@ -134,144 +133,6 @@ function sendForbidden(res, message) {
   res.end(JSON.stringify({ error: message || 'forbidden' }))
 }
 
-function denySocket(socket) {
-  try {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-  } catch { /* socket may already be gone */ }
-  socket.destroy()
-}
-
-/**
- * Install the gate over a live node:http Server by re-ordering listeners.
- * `hooks.onApiRequest(req, session, path, status)` fires once the response
- * of an auditable (non-document, non-asset) request completes;
- * `hooks.onWsOpen(req, session, path)` fires when a WebSocket upgrade
- * passes the gate. Returns a disposer restoring the original wiring.
- */
-function attachGate(server, decider, hooks = {}) {
-  const requestListeners = server.listeners('request').slice()
-  server.removeAllListeners('request')
-  const requestGate = (req, res) => {
-    Promise.resolve()
-      .then(() => decider(req))
-      .then((decision) => {
-        if (decision.action === 'allow') {
-          if (typeof hooks.onApiRequest === 'function' && isAuditableRequest((req.method || 'GET').toUpperCase(), req.headers && req.headers.accept, decision.path)) {
-            res.on('finish', () => {
-              try { hooks.onApiRequest(req, decision.session, decision.path, res.statusCode) } catch { /* audit must never break the gate */ }
-            })
-          }
-          for (const listener of requestListeners) listener.call(server, req, res)
-          return
-        }
-        if (decision.action === 'redirect') {
-          res.writeHead(302, { location: decision.location || LOGIN_PAGE_PATH })
-          res.end()
-          return
-        }
-        if (decision.action === 'forbidden') {
-          sendForbidden(res)
-          return
-        }
-        sendUnauthorized(res)
-      })
-      .catch(() => {
-        if (!res.headersSent) sendUnauthorized(res)
-        else res.end()
-      })
-  }
-  server.addListener('request', requestGate)
-
-  const upgradeListeners = server.listeners('upgrade').slice()
-  let upgradeGate = null
-  if (upgradeListeners.length > 0) {
-    server.removeAllListeners('upgrade')
-    upgradeGate = (req, socket, head) => {
-      Promise.resolve()
-        .then(() => decider(req))
-        .then((decision) => {
-          if (decision.action === 'allow') {
-            if (typeof hooks.onWsOpen === 'function') {
-              try { hooks.onWsOpen(req, decision.session, decision.path) } catch { /* audit must never break the gate */ }
-            }
-            for (const listener of upgradeListeners) listener.call(server, req, socket, head)
-            return
-          }
-          denySocket(socket)
-        })
-        .catch(() => denySocket(socket))
-    }
-    server.addListener('upgrade', upgradeGate)
-  }
-
-  return function dispose() {
-    server.removeListener('request', requestGate)
-    server.removeAllListeners('request')
-    for (const listener of requestListeners) server.addListener('request', listener)
-    if (upgradeGate !== null) {
-      server.removeListener('upgrade', upgradeGate)
-      server.removeAllListeners('upgrade')
-      for (const listener of upgradeListeners) server.addListener('upgrade', listener)
-    }
-  }
-}
-
-/**
- * Degraded gate for hosts where the server instance is unreachable: a
- * prefix-`/` route wrapping the (captured) fallback handler. Known blind
- * spots — `/api` and `/plugins` prefixes outrank `/` and are NOT covered
- * (documented in README). Audit hooks behave like the hard gate.
- */
-function installFallbackGate(webServer, decider, hooks = {}) {
-  const inner = typeof webServer.fallback === 'function' ? webServer.fallback : null
-  webServer.register({
-    kind: 'prefix',
-    path: '/',
-    handler: async (req, res) => {
-      let decision
-      try { decision = await decider(req) } catch { decision = { action: 'unauthorized' } }
-      if (decision.action === 'allow') {
-        if (typeof hooks.onApiRequest === 'function' && isAuditableRequest((req.method || 'GET').toUpperCase(), req.headers && req.headers.accept, decision.path)) {
-          res.on('finish', () => {
-            try { hooks.onApiRequest(req, decision.session, decision.path, res.statusCode) } catch { /* audit must never break the gate */ }
-          })
-        }
-        if (inner) return inner(req, res)
-        res.writeHead(404)
-        res.end()
-        return
-      }
-      if (decision.action === 'redirect') {
-        res.writeHead(302, { location: decision.location || LOGIN_PAGE_PATH })
-        res.end()
-        return
-      }
-      if (decision.action === 'forbidden') {
-        sendForbidden(res)
-        return
-      }
-      sendUnauthorized(res)
-    },
-  })
-  return () => {}
-}
-
-/**
- * Try the hard gate first; fall back to the route-level gateway when the
- * server instance is not reachable (host upgrades may change internals).
- * Returns { mode, dispose }.
- */
-function installGate(webServer, decider, hooks = {}) {
-  const server = webServer && webServer.server
-  if (server && typeof server.listeners === 'function' && typeof server.addListener === 'function') {
-    try {
-      const dispose = attachGate(server, decider, hooks)
-      return { mode: 'server', dispose }
-    } catch { /* fall through to degraded mode */ }
-  }
-  return { mode: 'fallback', dispose: installFallbackGate(webServer, decider, hooks) }
-}
-
 module.exports = {
   SESSION_COOKIE,
   LOGIN_PAGE_PATH,
@@ -279,9 +140,6 @@ module.exports = {
   PUBLIC_PATHS,
   gateDecision,
   createDecider,
-  attachGate,
-  installFallbackGate,
-  installGate,
   parseCookies,
   isDocumentRequest,
   isStaticAsset,

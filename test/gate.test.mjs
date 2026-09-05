@@ -1,16 +1,23 @@
-// Gate tests: pure decisions + end-to-end listener re-ordering on a real
-// node:http server (the hard gate) and the degraded route gateway.
+// Gate tests: pure decisions (gateDecision/parseCookies/isPublicPath/...) +
+// the gateway-core HTTPS listener (Host allow-list, login → session cookie,
+// unauth 302/401, reverse-proxy passthrough). The old shared-server
+// attachGate/installFallbackGate machinery is gone — the gateway listener IS
+// the gate now.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import net from 'node:net'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
 
+// self-signed certificate on the gateway listener — trust it for the test process
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+
+const require = createRequire(import.meta.url)
 const {
   gateDecision,
   createDecider,
-  attachGate,
-  installFallbackGate,
-  installGate,
   parseCookies,
   isDocumentRequest,
   isStaticAsset,
@@ -18,10 +25,11 @@ const {
   isPublicPath,
   PUBLIC_PATHS,
 } = await import('../src/gate.js')
-
-function listen(server) {
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
-}
+const { createStore, normalizeIp } = require('../src/store.js')
+const plugin = require('../src/index.js')
+const { handleApi, sessionCookie, clearedCookie } = plugin.__internals
+const { renderLoginPage } = require('../src/login-page.js')
+const { createGateway } = require('../src/gateway-core.js')
 
 const DOC = { method: 'GET', accept: 'text/html,application/xhtml+xml' }
 const XHR = { method: 'GET', accept: '*/*' }
@@ -35,8 +43,6 @@ test('gateDecision: allow authenticated / public paths; redirect documents; 401 
   assert.deepEqual(gateDecision({ ...DOC, path: '/some/spa/route', sessionValid: false }), { action: 'redirect', location: '/login' })
   assert.equal(gateDecision({ ...XHR, path: '/api/foo', sessionValid: false }).action, 'unauthorized')
   assert.equal(gateDecision({ method: 'POST', accept: '', path: '/dsh-tasks/api', sessionValid: false }).action, 'unauthorized')
-  // document POSTs are not "navigations that can be redirected"… but HTML forms
-  // do navigate; only GET/HEAD count as documents, everything else 401s.
   assert.equal(gateDecision({ method: 'POST', accept: 'text/html', path: '/', sessionValid: false }).action, 'unauthorized')
 })
 
@@ -59,203 +65,122 @@ test('static assets are excluded from the audit, API calls are not', () => {
   assert.ok(isStaticAsset('/favicon.ico'))
   assert.ok(!isStaticAsset('/api/sessions.create'))
   assert.ok(!isStaticAsset('/dsh-tasks/api'))
-  assert.ok(!isAuditableRequest('GET', 'text/html', '/')) // document → access ledger instead
-  assert.ok(!isAuditableRequest('GET', '*/*', '/assets/app.js')) // asset
+  assert.ok(!isAuditableRequest('GET', 'text/html', '/'))
+  assert.ok(!isAuditableRequest('GET', '*/*', '/assets/app.js'))
   assert.ok(isAuditableRequest('POST', 'application/json', '/api/sessions.create'))
   assert.ok(isAuditableRequest('GET', '*/*', '/dsh-tasks/api'))
 })
 
-test('attachGate: end-to-end on a real server — redirect, 401, passthrough, upgrade deny', async () => {
-  const hits = []
-  const server = http.createServer((req, res) => {
-    hits.push(req.url)
+test('createDecider: banned IP is denied 403 before any session work — login page included', async () => {
+  const banned = new Set(['198.51.100.9'])
+  const decider = createDecider({
+    resolveSession: async () => ({ user: { username: 'u' } }), // even valid sessions must not save a banned IP
+    getClientIp: (req) => normalizeIp((req.socket && req.socket.remoteAddress) || ''),
+    isBanned: (ip) => banned.has(ip),
+  })
+  const decision = await decider({ url: '/login', method: 'GET', headers: {}, socket: { remoteAddress: '198.51.100.9' } })
+  assert.equal(decision.action, 'forbidden')
+  const apiDecision = await decider({ url: '/api/x', method: 'POST', headers: { cookie: 'um_session=good' }, socket: { remoteAddress: '::ffff:198.51.100.9' } })
+  assert.equal(apiDecision.action, 'forbidden', 'v6-mapped ban addresses match')
+})
+
+test('gateway-core: Host allow-list, login flow, unauth 302/401, proxy passthrough', async () => {
+  // mock upstream = the loopback dsh webserver
+  const upstream = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' })
     res.end(`inner:${req.url}`)
   })
-  let upgradeHit = null
-  server.on('upgrade', (req, socket) => {
-    upgradeHit = req.url
-    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
-  })
-  const port = await listen(server)
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+  const upstreamPort = upstream.address().port
 
+  const home = mkdtempSync(join(tmpdir(), 'um-gw-'))
+  const store = createStore({ home })
+  await store.load()
+  const clientIp = (req) => '127.0.0.1'
+  const deps = { store, clientIp }
   const decider = createDecider({
-    resolveSession: async (token) => (token === 'good' ? { user: { username: 'u' } } : null),
+    resolveSession: async (token) => store.resolveSession(token),
+    getClientIp: clientIp,
+    isBanned: (ip) => store.isBanned(ip),
+    onAccess: () => {},
   })
-  const accesses = []
-  const auditCalls = []
-  const wsCalls = []
-  const dispose = attachGate(server, decider, {
-    onApiRequest: (req, session, path, status) => auditCalls.push({ path, status, username: session && session.user.username }),
-    onWsOpen: (req, session, path) => wsCalls.push({ path, username: session && session.user.username }),
+  const auditHooks = { onApiRequest: () => {}, onWsOpen: () => {} }
+  const gw = createGateway({
+    listenHost: '127.0.0.1',
+    port: 0,
+    upstream: `http://127.0.0.1:${upstreamPort}`,
+    sites: [{ hosts: ['localhost'] }],
+    certsDir: join(home, 'certs'),
+    title: 'DSH 控制台',
+    decider,
+    handleApi,
+    renderLoginPage,
+    deps,
+    clearedCookie,
+    auditHooks,
+    log: () => {},
+    warn: () => {},
   })
+  const port = await gw.start()
+  const base = `https://localhost:${port}`
+  const baseIp = `https://127.0.0.1:${port}`
 
-  // unauthenticated document → 302 /login (undici sends no Accept by default)
-  const redirected = await fetch(`http://127.0.0.1:${port}/`, {
-    redirect: 'manual',
-    headers: { accept: 'text/html,application/xhtml+xml' },
-  })
-  assert.equal(redirected.status, 302)
-  assert.equal(redirected.headers.get('location'), '/login')
+  try {
+    // Host not in the allow-list → 421 (127.0.0.1 is not 'localhost')
+    const unknown = await fetch(`${baseIp}/`, { redirect: 'manual' })
+    assert.equal(unknown.status, 421)
 
-  // unauthenticated XHR → 401 JSON
-  const denied = await fetch(`http://127.0.0.1:${port}/api/foo`, { headers: { accept: 'application/json' } })
-  assert.equal(denied.status, 401)
+    // unauthenticated document navigation → 302 /login
+    const redirected = await fetch(`${base}/`, { headers: { accept: 'text/html,application/xhtml+xml' }, redirect: 'manual' })
+    assert.equal(redirected.status, 302)
+    assert.equal(redirected.headers.get('location'), '/login')
 
-  // public path passes through to the inner handler
-  const loginPage = await fetch(`http://127.0.0.1:${port}/login`)
-  assert.equal(loginPage.status, 200)
-  assert.equal(await loginPage.text(), 'inner:/login')
+    // /login page (register tab is default on a fresh system)
+    const loginPage = await fetch(`${base}/login`)
+    assert.equal(loginPage.status, 200)
+    assert.ok((await loginPage.text()).includes('注册'))
 
-  // valid session → passthrough
-  const authed = await fetch(`http://127.0.0.1:${port}/whatever`, { headers: { cookie: 'um_session=good' } })
-  assert.equal(authed.status, 200)
-  assert.equal(await authed.text(), 'inner:/whatever')
+    // unauthenticated API/XHR → 401
+    const denied = await fetch(`${base}/api/foo`, { headers: { accept: 'application/json' } })
+    assert.equal(denied.status, 401)
 
-  // audited: an authed API call lands in the audit hook with its status
-  const apiCall = await fetch(`http://127.0.0.1:${port}/api/sessions.create`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: 'um_session=good' },
-    body: '{}',
-  })
-  assert.equal(apiCall.status, 200)
-  await new Promise((r) => setTimeout(r, 10))
-  const apiAudit = auditCalls.find((c) => c.path === '/api/sessions.create')
-  assert.ok(apiAudit, 'API request audited')
-  assert.equal(apiAudit.status, 200)
-  assert.equal(apiAudit.username, 'u')
-  // assets are never audited
-  await fetch(`http://127.0.0.1:${port}/assets/app.js`, { headers: { cookie: 'um_session=good' } })
-  await new Promise((r) => setTimeout(r, 10))
-  assert.equal(auditCalls.find((c) => c.path === '/assets/app.js'), undefined, 'static asset not audited')
-
-  // WebSocket upgrade without a session is denied at the socket level
-  const denyResult = await new Promise((resolve) => {
-    const socket = net.connect(port, '127.0.0.1')
-    let buf = ''
-    let timer = null
-    const finish = (result) => {
-      clearTimeout(timer)
-      socket.destroy()
-      resolve(result)
-    }
-    socket.on('data', (d) => {
-      buf += d.toString()
-      finish({ response: buf.split('\r\n')[0], upgradeHit })
+    // register the first admin → session cookie
+    const reg = await fetch(`${base}/user-management/api/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'boss', password: 'secret1' }),
     })
-    socket.on('error', () => finish({ response: buf.split('\r\n')[0] || 'destroyed', upgradeHit }))
-    socket.on('connect', () => {
-      socket.write('GET /api/events.mux HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
-    })
-    timer = setTimeout(() => finish({ response: buf.split('\r\n')[0] || 'destroyed', upgradeHit }), 500)
-  })
-  assert.equal(denyResult.upgradeHit, null, 'inner upgrade listener never called without a session')
-  assert.ok(denyResult.response.includes('401'), `socket denied: ${denyResult.response}`)
+    assert.equal(reg.status, 200)
+    const regBody = await reg.json()
+    assert.equal(regBody.user.role, 'admin')
+    const setCookie = reg.headers.get('set-cookie') || ''
+    const cookie = setCookie.split(';')[0]
+    assert.ok(cookie.startsWith('um_session='))
 
-  // an authed WS upgrade reaches the inner listener and the audit hook
-  const wsResult = await new Promise((resolve) => {
-    const socket = net.connect(port, '127.0.0.1')
-    let buf = ''
-    let timer = null
-    const finish = (result) => {
-      clearTimeout(timer)
-      socket.destroy()
-      resolve(result)
-    }
-    socket.on('data', (d) => {
-      buf += d.toString()
-      finish(buf.split('\r\n')[0])
-    })
-    socket.on('error', () => finish(buf.split('\r\n')[0] || 'destroyed'))
-    socket.on('connect', () => {
-      socket.write('GET /api/events.mux HTTP/1.1\r\nHost: x\r\nCookie: um_session=good\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
-    })
-    timer = setTimeout(() => finish(buf.split('\r\n')[0] || 'timeout'), 500)
-  })
-  assert.ok(wsResult.includes('101'), `authed upgrade passes: ${wsResult}`)
-  assert.deepEqual(wsCalls, [{ path: '/api/events.mux', username: 'u' }])
+    // authed document navigation → proxied to the loopback upstream
+    const authed = await fetch(`${base}/`, { headers: { accept: 'text/html,application/xhtml+xml', cookie }, redirect: 'manual' })
+    assert.equal(authed.status, 200)
+    assert.equal(await authed.text(), 'inner:/')
 
-  // dispose restores the original wiring — everything passes again
-  dispose()
-  const after = await fetch(`http://127.0.0.1:${port}/`, {
-    redirect: 'manual',
-    headers: { accept: 'text/html,application/xhtml+xml', cookie: 'um_session=good' },
-  })
-  assert.equal(after.status, 200)
-  server.close()
-  server.closeAllConnections()
-})
+    // authed API/XHR → proxied too
+    const proxiedApi = await fetch(`${base}/api/sessions.create`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: '{}' })
+    assert.equal(proxiedApi.status, 200)
+    assert.equal(await proxiedApi.text(), 'inner:/api/sessions.create')
 
-test('installFallbackGate: route-level gateway wraps the captured fallback', async () => {
-  let webServer
-  const inner = (req, res) => { res.writeHead(200); res.end('fallback') }
-  const registered = []
-  webServer = {
-    fallback: inner,
-    register: (route) => registered.push(route),
+    // /logout clears the cookie + bounces to /login (send the cookie so the
+    // server drops the session, not just the client cookie)
+    const out = await fetch(`${base}/logout`, { redirect: 'manual', headers: { cookie } })
+    assert.equal(out.status, 302)
+    assert.equal(out.headers.get('location'), '/login')
+    assert.ok((out.headers.get('set-cookie') || '').includes('Max-Age=0'))
+
+    // the session is dropped server-side — the old cookie no longer authenticates
+    const after = await fetch(`${base}/`, { headers: { accept: 'text/html,application/xhtml+xml', cookie }, redirect: 'manual' })
+    assert.equal(after.status, 302)
+  } finally {
+    gw.stop()
+    upstream.close()
+    upstream.closeAllConnections()
+    rmSync(home, { recursive: true, force: true })
   }
-  const decider = createDecider({ resolveSession: async (token) => token === 'good' })
-  const dispose = installFallbackGate(webServer, decider)
-  assert.equal(registered.length, 1)
-  assert.equal(registered[0].path, '/')
-
-  const res = await new Promise((resolve) => {
-    const fakeRes = {
-      writeHead(status, headers) { this.status = status; this.headers = headers },
-      end(body) { this.body = body; resolve(this) },
-    }
-    registered[0].handler({ method: 'GET', url: '/', headers: { accept: 'text/html' } }, fakeRes)
-  })
-  assert.equal(res.status, 302)
-
-  const ok = await new Promise((resolve) => {
-    const fakeRes = {
-      writeHead(status) { this.status = status },
-      end(body) { this.body = body; resolve(this) },
-    }
-    registered[0].handler({ method: 'GET', url: '/', headers: { accept: 'text/html', cookie: 'um_session=good' } }, fakeRes)
-  })
-  assert.equal(ok.status, 200)
-  assert.equal(ok.body, 'fallback')
-  dispose()
-})
-
-test('installGate prefers the hard gate, degrades when the server is unreachable', async () => {
-  const decider = createDecider({ resolveSession: async () => false })
-  // no webServer.server → degraded mode
-  const degraded = installGate({ fallback: null, register: () => {} }, decider)
-  assert.equal(degraded.mode, 'fallback')
-  degraded.dispose()
-  // a real server → hard gate
-  const server = http.createServer(() => {})
-  const hard = installGate({ server }, decider)
-  assert.equal(hard.mode, 'server')
-  hard.dispose()
-  server.close()
-})
-
-test('banned IP is denied 403 before any session work — login page included', async () => {
-  const banned = new Set(['198.51.100.9'])
-  const server = http.createServer((req, res) => { res.writeHead(200); res.end('inner') })
-  const port = await listen(server)
-  const decider = createDecider({
-    resolveSession: async () => ({ user: { username: 'u' } }), // even valid sessions must not save a banned IP
-    getClientIp: (req) => req.socket.remoteAddress.replace(/^::ffff:/, ''),
-    isBanned: (ip) => banned.has(ip),
-  })
-  const dispose = attachGate(server, decider)
-
-  const blocked = await fetch(`http://127.0.0.1:${port}/login`, { redirect: 'manual' })
-  assert.equal(blocked.status, 200, 'loopback is not on the ban list — passes')
-
-  // simulate a banned source via the decider contract directly
-  const decision = await decider({ url: '/login', method: 'GET', headers: {}, socket: { remoteAddress: '198.51.100.9' } })
-  assert.equal(decision.action, 'forbidden')
-  // and for an API path with a session cookie — still forbidden
-  const apiDecision = await decider({ url: '/api/x', method: 'POST', headers: { cookie: 'um_session=good' }, socket: { remoteAddress: '::ffff:198.51.100.9' } })
-  assert.equal(apiDecision.action, 'forbidden', 'v6-mapped ban addresses match')
-
-  dispose()
-  server.close()
-  server.closeAllConnections()
 })

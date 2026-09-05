@@ -9,11 +9,38 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { createStore } = require('../src/store.js')
-const { SESSION_COOKIE, createDecider, attachGate } = require('../src/gate.js')
+const { SESSION_COOKIE, parseCookies, isAuditableRequest } = require('../src/gate.js')
 const plugin = require('../src/index.js')
 const { handleApi } = plugin.__internals
 
 let home, store, server, port, deps
+
+// Replicates the gateway's wireAudit: on response completion, record the
+// operation in the audit ledger (the gateway does this in production; the
+// bare-http test server has no gate, so handleApi's own 401-anonymous covers
+// access control and this wrapper covers the audit ledger).
+function withAudit(handler, deps) {
+  return async (req, res) => {
+    const cookies = parseCookies(req.headers && req.headers.cookie)
+    const session = await deps.store.resolveSession(cookies[SESSION_COOKIE])
+    let path = '/'
+    try { path = new URL(req.url || '/', 'http://dsh.local').pathname } catch { /* keep default */ }
+    if (isAuditableRequest((req.method || 'GET').toUpperCase(), req.headers && req.headers.accept, path)) {
+      res.on('finish', () => {
+        deps.store.appendAudit({
+          type: 'api',
+          username: session ? session.user.username : null,
+          userId: session ? session.user.id : null,
+          ip: deps.clientIp(req),
+          method: (req.method || 'GET').toUpperCase(),
+          path,
+          status: res.statusCode,
+        }).catch(() => {})
+      })
+    }
+    return handler(req, res, deps)
+  }
+}
 
 beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), 'um-api-'))
@@ -21,25 +48,14 @@ beforeEach(async () => {
   await store.load()
   deps = { store, clientIp: () => '127.0.0.1' }
   server = http.createServer((req, res) => {
-    handleApi(req, res, deps).catch((error) => {
-      res.writeHead(500, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: String(error && error.message) }))
+    withAudit(handleApi, deps)(req, res).catch((error) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error && error.message) }))
+      } else {
+        res.end()
+      }
     })
-  })
-  // wire the same audit path production uses: gate hooks → appendAudit
-  const decider = createDecider({ resolveSession: async (token) => store.resolveSession(token) })
-  attachGate(server, decider, {
-    onApiRequest: (req, session, path, status) => {
-      store.appendAudit({
-        type: 'api',
-        username: session ? session.user.username : null,
-        userId: session ? session.user.id : null,
-        ip: '127.0.0.1',
-        method: (req.method || 'GET').toUpperCase(),
-        path,
-        status,
-      }).catch(() => {})
-    },
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   port = server.address().port

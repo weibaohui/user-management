@@ -3,24 +3,36 @@
 /**
  * dsh-plugin-user-management — Host half
  *
- * Login gate + user administration for the dsh web server:
- * - Global auth gate over the shared node:http server (see src/gate.js):
- *   unauthenticated page navigations are redirected to `/login`, API/WS
+ * An HTTPS remote-access gateway + user administration for the dsh web
+ * surface. The plugin spins up its OWN node:https listener (TLS + self-signed
+ * certs + Host allow-list) that reverse-proxies to the loopback dsh
+ * webserver, with user-management's own user store as the auth:
+ * - Standalone /login page (login + register tabs; first registrant becomes
+ *   admin). Unauthenticated page navigations redirect to /login, API/WS
  *   traffic is answered 401.
- * - Standalone `/login` page (login + register tabs, no host SPA needed).
- * - JSON API under `/user-management/api`: sessions, self service, admin
- *   user management (list / delete / reset password / role) and the
- *   activity ledger (login records, access records).
+ * - JSON API under /user-management/api: sessions, self service, admin user
+ *   management (list / delete / reset password / role / disable), IP bans,
+ *   and the activity + audit ledgers.
+ * - Everything else (the SPA, dsh /api, /plugins, static) is proxied to the
+ *   loopback dsh web — but only past the auth gate, so the loopback dsh web
+ *   stays unreachable directly and the auth cannot be bypassed.
  *
  * Role model: the first account registered into an empty system becomes
  * admin; later registrations are plain users. Admins manage everyone,
  * plain users see/change only themselves.
  *
- * Data lives in `$DSH_HOME/user-management/` (0600, atomic writes) —
- * see src/store.js.
+ * Data lives in `$DSH_HOME/user-management/` (0600, atomic writes) — see
+ * src/store.js. Self-signed certs live under `$DSH_HOME/user-management/certs/`.
+ *
+ * The network-access layer (gateway-core/proxy/certs + hot-reload + self-heal)
+ * is adapted from dsh-gateway (clarknu/dsh-gateway); the auth backend is
+ * user-management's store (um_session), NOT dsh-gateway's flat HMAC users.
  */
 
 const { join } = require('node:path')
+const { networkInterfaces } = require('node:os')
+const { request: httpsRequest } = require('node:https')
+const z = require('@deepseek-ai/schemastery')
 const {
   createStore,
   dshHome,
@@ -33,10 +45,11 @@ const {
   SESSION_COOKIE,
   API_PREFIX,
   createDecider,
-  installGate,
   parseCookies,
+  isAuditableRequest,
 } = require('./gate')
 const { renderLoginPage } = require('./login-page')
+const { createGateway } = require('./gateway-core')
 
 const MAX_BODY_BYTES = 64 * 1024
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -67,12 +80,13 @@ function readJsonBody(req) {
   })
 }
 
+// Secure because the gateway is HTTPS-only now (the shared-server HTTP gate is gone).
 function sessionCookie(token) {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}`
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${SESSION_TTL_SECONDS}`
 }
 
 function clearedCookie() {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`
 }
 
 /** Normalize an API path: strip trailing slashes (keep the root). */
@@ -90,8 +104,12 @@ function statusForStoreError(error) {
 }
 
 /**
- * The full request handler, factored out for tests. `deps`:
- * { store, resolveSession(req), clientIp(req), log(entry) }.
+ * The full API request handler, factored out for tests. `deps`:
+ * { store, clientIp(req) }.
+ * Anonymous (no session) → 401 on every non-public endpoint; an authenticated
+ * non-admin hitting an admin endpoint → 403. The gateway also 401s anonymous
+ * non-public paths before reaching here (defense in depth), but handleApi is
+ * self-consistent without it so it can be tested on a bare http server.
  */
 async function handleApi(req, res, deps) {
   const url = new URL(req.url || '/', 'http://dsh.local')
@@ -105,10 +123,12 @@ async function handleApi(req, res, deps) {
     return store.resolveSession(cookies[SESSION_COOKIE])
   }
 
+  // requireAdmin: 401 anonymous, 403 authenticated non-admin, else the admin session.
   const requireAdmin = async () => {
     const session = await authed()
-    if (!session || session.user.role !== 'admin') return null
-    return session
+    if (!session) return { ok: false, status: 401, message: '未登录' }
+    if (session.user.role !== 'admin') return { ok: false, status: 403, message: '需要管理员权限' }
+    return { ok: true, session }
   }
 
   // ── anonymous endpoints ──────────────────────────────────────────────────
@@ -177,7 +197,6 @@ async function handleApi(req, res, deps) {
       if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
       throw error
     }
-    // keep the current session alive, kill every other one
     await store.dropUserSessions(session.user.id, session.token)
     await store.appendActivity({ type: 'password_change', username: session.user.username, userId: session.user.id, ip: deps.clientIp(req) })
     return sendJson(res, 200, { ok: true })
@@ -225,17 +244,17 @@ async function handleApi(req, res, deps) {
   }
 
   if (apiPath === '/audit' && method === 'DELETE') {
-    const session = await requireAdmin()
-    if (!session) return sendJson(res, 403, { error: '需要管理员权限' })
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     await store.clearAudit()
-    await store.appendActivity({ type: 'audit_clear', username: session.user.username, userId: session.user.id, ip: deps.clientIp(req) })
+    await store.appendActivity({ type: 'audit_clear', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req) })
     return sendJson(res, 200, { ok: true })
   }
 
   const auditDeleteMatch = /^\/audit\/([A-Za-z0-9_-]+)$/.exec(apiPath)
   if (auditDeleteMatch && method === 'DELETE') {
-    const session = await requireAdmin()
-    if (!session) return sendJson(res, 403, { error: '需要管理员权限' })
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const removed = await store.removeAuditEntry(auditDeleteMatch[1])
     if (!removed) return sendJson(res, 404, { error: '记录不存在' })
     return sendJson(res, 200, { ok: true })
@@ -252,26 +271,24 @@ async function handleApi(req, res, deps) {
 
   if (apiPath === '/bans' && method === 'POST') {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const body = await readJsonBody(req)
     const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
-    // self-lockout guard: banning your own live IP would lock the whole
-    // deployment (the gate runs before this API can unban it again)
     if (ip === deps.clientIp(req)) return sendJson(res, 400, { error: '不能封禁当前正在使用的 IP' })
     try {
-      await store.banIp(ip, { note: body.note, by: admin.user.username })
+      await store.banIp(ip, { note: body.note, by: admin.session.user.username })
     } catch (error) {
       if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
       throw error
     }
-    await store.appendActivity({ type: 'ban_ip', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `ip=${ip}${body.note ? ` note=${body.note}` : ''}` })
+    await store.appendActivity({ type: 'ban_ip', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `ip=${ip}${body.note ? ` note=${body.note}` : ''}` })
     return sendJson(res, 200, { ok: true })
   }
 
   const unbanMatch = /^\/bans\/(.+)$/.exec(apiPath)
   if (unbanMatch && method === 'DELETE') {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const ip = decodeURIComponent(unbanMatch[1])
     try {
       await store.unbanIp(ip)
@@ -279,7 +296,7 @@ async function handleApi(req, res, deps) {
       if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
       throw error
     }
-    await store.appendActivity({ type: 'unban_ip', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `ip=${ip}` })
+    await store.appendActivity({ type: 'unban_ip', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `ip=${ip}` })
     return sendJson(res, 200, { ok: true })
   }
 
@@ -287,11 +304,11 @@ async function handleApi(req, res, deps) {
 
   if (apiPath === '/users' && method === 'POST') {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const body = await readJsonBody(req)
     try {
       const created = await store.createUser({ username: body.username, password: body.password, role: body.role || 'user' })
-      await store.appendActivity({ type: 'user_created', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `created=${created.username} role=${created.role}` })
+      await store.appendActivity({ type: 'user_created', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `created=${created.username} role=${created.role}` })
       return sendJson(res, 200, { user: created })
     } catch (error) {
       if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
@@ -302,10 +319,10 @@ async function handleApi(req, res, deps) {
   const disableMatch = /^\/users\/([A-Za-z0-9_-]+)\/disabled$/.exec(apiPath)
   if (disableMatch && method === 'POST') {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const target = store.findUser(disableMatch[1])
     if (!target) return sendJson(res, 404, { error: '用户不存在' })
-    if (target.id === admin.user.id) return sendJson(res, 403, { error: '不能禁用自己的账号' })
+    if (target.id === admin.session.user.id) return sendJson(res, 403, { error: '不能禁用自己的账号' })
     const body = await readJsonBody(req)
     const disabled = !!body.disabled
     try {
@@ -317,7 +334,7 @@ async function handleApi(req, res, deps) {
     if (disabled) await store.dropUserSessions(target.id)
     await store.appendActivity({
       type: disabled ? 'user_disabled' : 'user_enabled',
-      username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req),
+      username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req),
       detail: `target=${target.username}`,
     })
     return sendJson(res, 200, { user: store.publicUser(target) })
@@ -327,38 +344,38 @@ async function handleApi(req, res, deps) {
 
   if (adminMatch && method === 'DELETE' && !adminMatch[2]) {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const target = store.findUser(adminMatch[1])
     if (!target) return sendJson(res, 404, { error: '用户不存在' })
-    if (target.id === admin.user.id) return sendJson(res, 403, { error: '不能删除自己的账号' })
+    if (target.id === admin.session.user.id) return sendJson(res, 403, { error: '不能删除自己的账号' })
     try {
       await store.removeUser(target)
     } catch (error) {
       if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
       throw error
     }
-    await store.appendActivity({ type: 'delete_user', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `deleted=${target.username}` })
+    await store.appendActivity({ type: 'delete_user', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `deleted=${target.username}` })
     return sendJson(res, 200, { ok: true })
   }
 
   if (adminMatch && adminMatch[2] === 'reset-password' && method === 'POST') {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const target = store.findUser(adminMatch[1])
     if (!target) return sendJson(res, 404, { error: '用户不存在' })
     const generated = tempPassword()
     await store.setPassword(target, generated)
     await store.dropUserSessions(target.id)
-    await store.appendActivity({ type: 'reset_password', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `target=${target.username}` })
+    await store.appendActivity({ type: 'reset_password', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `target=${target.username}` })
     return sendJson(res, 200, { tempPassword: generated })
   }
 
   if (adminMatch && adminMatch[2] === 'role' && method === 'POST') {
     const admin = await requireAdmin()
-    if (!admin) return sendJson(res, 403, { error: '需要管理员权限' })
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
     const target = store.findUser(adminMatch[1])
     if (!target) return sendJson(res, 404, { error: '用户不存在' })
-    if (target.id === admin.user.id) return sendJson(res, 403, { error: '不能修改自己的角色' })
+    if (target.id === admin.session.user.id) return sendJson(res, 403, { error: '不能修改自己的角色' })
     const body = await readJsonBody(req)
     try {
       await store.setRole(target, body.role)
@@ -367,14 +384,54 @@ async function handleApi(req, res, deps) {
       throw error
     }
     await store.dropUserSessions(target.id)
-    await store.appendActivity({ type: 'role_change', username: admin.user.username, userId: admin.user.id, ip: deps.clientIp(req), detail: `target=${target.username} role=${target.role}` })
+    await store.appendActivity({ type: 'role_change', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `target=${target.username} role=${target.role}` })
     return sendJson(res, 200, { user: store.publicUser(target) })
   }
 
   return sendJson(res, 404, { error: 'not found' })
 }
 
-module.exports = {
+// ── schemastery config (the `user-management:` settings namespace) ──────────
+const Config = z.object({
+  enabled: z.boolean().default(true),
+  listenHost: z.string().default('127.0.0.1'),
+  port: z.natural().min(1).max(65535).default(19843),
+  sites: z
+    .array(
+      z.object({
+        hosts: z.array(z.string()).default([]),
+        cert: z.string().default(''),
+        key: z.string().default(''),
+      }),
+    )
+    .default([{ hosts: ['localhost'], cert: '', key: '' }]),
+  title: z.string().default('DSH 控制台'),
+  // Reserved (accepted, not wired): the store owns session lifetime, login
+  // failure is not auto-locked (admins set IP bans instead), and handleApi
+  // owns its own body-size cap. Kept for the settings card + forward use.
+  sessionDays: z.natural().min(1).default(7),
+  loginFailLimit: z.natural().min(1).default(5),
+  lockoutSeconds: z.natural().min(1).default(60),
+  maxBodyBytes: z.natural().min(1024).default(16384),
+})
+
+/**
+ * Fail-closed gate, analogous to dsh-gateway's admin/change-me guard but for
+ * an empty user store: a non-loopback listener with NO registered users would
+ * let the first caller register as admin over the network. Refuse to start
+ * (keep any running listener up) until the first admin is registered on
+ * loopback. Returns an error message or null when safe to apply.
+ */
+function emptyUsersGuard(cfg, store) {
+  const listenHost = String(cfg && cfg.listenHost || '')
+  const loopbackOnly = /^(127\.0\.0\.1|::1|localhost)$/i.test(listenHost)
+  if (!loopbackOnly && store.listUsers().length === 0) {
+    return 'refusing to apply: non-loopback listener with no registered users — register the first admin on loopback first (open the gateway URL from the host)'
+  }
+  return null
+}
+
+const plugin = {
   name: 'user-management',
   inject: ['webServer'],
   __internals: {
@@ -388,6 +445,8 @@ module.exports = {
     SELF_ACTIVITY_TYPES,
     ADMIN_ACTIVITY_TYPES,
     AUDIT_LIMIT_DEFAULT,
+    Config,
+    emptyUsersGuard,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'
@@ -399,76 +458,295 @@ module.exports = {
     const clientIp = (req) => normalizeIp(req.socket && req.socket.remoteAddress)
     const deps = { store, clientIp }
 
-    // GET /login — standalone login/register page
+    const dataDir = join(dshHome(), 'user-management')
+    const certsDir = join(dataDir, 'certs')
+
+    const log = (msg) => console.log(`[${pluginName}] ${msg}`)
+    const warn = (msg) => console.warn(`[${pluginName}] ${msg}`)
+    log(`gateway plugin v${require('../package.json').version} starting (pid ${process.pid})`)
+
+    /** The injected webServer service carries the real bound dsh port. */
+    const resolveUpstream = (cfg) => {
+      try {
+        const ws = ctx.webServer
+        if (ws && typeof ws.port === 'number') return `http://127.0.0.1:${ws.port}`
+      } catch { /* fall through */ }
+      warn('user-management: webServer service unavailable — assuming upstream http://127.0.0.1:3080')
+      return 'http://127.0.0.1:3080'
+    }
+
+    // The decider runs on every gateway request: IP-ban check (403) → session
+    // resolve → gate decision (allow/redirect/401). onAccess feeds the activity
+    // ledger; the gateway wires onApiRequest/onWsOpen to the audit ledger.
+    const decider = createDecider({
+      resolveSession: async (token) => { await ready; return store.resolveSession(token) },
+      getClientIp: clientIp,
+      isBanned: (ip) => store.isBanned(ip),
+      onAccess: (req, resolved, path) => {
+        store.appendActivity({
+          type: 'access',
+          username: resolved ? resolved.user.username : null,
+          userId: resolved ? resolved.user.id : null,
+          ip: clientIp(req),
+          detail: path,
+        }).catch(() => {})
+      },
+    })
+    const auditEntry = (session, method, path, ip, status, type) => ({
+      type,
+      username: session ? session.user.username : null,
+      userId: session ? session.user.id : null,
+      ip,
+      method,
+      path,
+      status: status === undefined ? null : status,
+    })
+    const auditHooks = {
+      onApiRequest: (req, session, path, status) => {
+        store.appendAudit(auditEntry(session, (req.method || 'GET').toUpperCase(), path, clientIp(req), status, 'api')).catch(() => {})
+      },
+      onWsOpen: (req, session, path) => {
+        store.appendAudit(auditEntry(session, 'WS', path, clientIp(req), null, 'ws')).catch(() => {})
+      },
+    }
+
+    // ── gateway lifecycle: hot-reload (bind-then-swap) + self-heal ────────
+    let settingsScope = null
+    let current = null
+    let currentOptions = null
+    let startedAt = null
+    let lastError = ''
+    let lastOnErrorAt = 0
+    let restarting = false
+    let rebuildChain = Promise.resolve()
+    const resolvedConfig = () => (settingsScope ? settingsScope.get() : config)
+
+    const queueRebuild = (force = false) => {
+      rebuildChain = rebuildChain
+        .then(async () => {
+          await ready
+          const cfg = resolvedConfig()
+          if (cfg.enabled === false) {
+            if (current) log('user-management: disabled — listener stopped')
+            restarting = false
+            stopHealthCheck()
+            try { current && current.stop() } catch (e) { warn(`user-management: error stopping listener — ${e.message || e}`) }
+            current = null
+            currentOptions = null
+            startedAt = null
+            return
+          }
+          // Fail-closed: refuse a non-loopback listener with no users.
+          const guardError = emptyUsersGuard(cfg, store)
+          if (guardError) {
+            restarting = false
+            if (current && !force) {
+              warn(`user-management: ${guardError} — kept the running listener; register the first admin or restrict to loopback`)
+            } else {
+              stopHealthCheck()
+              try { current && current.stop() } catch (e) { warn(`user-management: error stopping listener — ${e.message || e}`) }
+              current = null
+              currentOptions = null
+              startedAt = null
+              lastError = guardError
+              warn(`user-management: ${guardError}`)
+            }
+            return
+          }
+          const options = {
+            listenHost: cfg.listenHost,
+            port: cfg.port,
+            upstream: resolveUpstream(cfg),
+            sites: cfg.sites || [{ hosts: ['localhost'] }],
+            certsDir,
+            title: cfg.title,
+            decider,
+            handleApi,
+            renderLoginPage,
+            deps,
+            clearedCookie,
+            auditHooks,
+            log,
+            warn,
+            onError: (error) => {
+              const now = Date.now()
+              if (now - lastOnErrorAt < 30000) {
+                warn('user-management: listener error recurring — suppressing auto-restart')
+                return
+              }
+              lastOnErrorAt = now
+              void queueRebuild(true)
+            },
+          }
+          if (current && !force) {
+            // Two-tier hot reload: request-time fields mutate in place (no gap);
+            // listener-affecting fields restart the server.
+            const restartNeeded =
+              currentOptions.listenHost !== options.listenHost ||
+              currentOptions.port !== options.port ||
+              currentOptions.upstream !== options.upstream ||
+              JSON.stringify(currentOptions.sites) !== JSON.stringify(options.sites)
+            if (!restartNeeded) {
+              restarting = false
+              Object.assign(currentOptions, options)
+              currentOptions.sites = options.sites
+              return
+            }
+            log('user-management: listener settings changed — restarting')
+          }
+          // A listener swap tears down the very connection that requested it.
+          // Give the in-flight response a beat to flush before closing the old server.
+          if (current) await new Promise((resolve) => setTimeout(resolve, 120))
+          restarting = true
+          stopHealthCheck()
+          try { current && current.stop() } catch (e) { warn(`user-management: error stopping previous listener — ${e.message || e}`) }
+          current = null
+          currentOptions = null
+          startedAt = null
+          lastError = ''
+          try {
+            const next = createGateway(options)
+            const port = await next.start() // bind-then-swap: only publish `current` after a successful bind
+            current = next
+            currentOptions = options
+            startedAt = new Date().toISOString()
+            restarting = false
+            bootWarnings(cfg, port)
+            startHealthCheck()
+          } catch (error) {
+            restarting = false
+            stopHealthCheck()
+            lastError = error.message || String(error)
+            warn(`user-management: failed to apply configuration, gateway is down — ${lastError}`)
+          }
+        })
+        .catch(() => {}) // a contained rebuild never poisons the chain
+      return rebuildChain
+    }
+
+    function bootWarnings(cfg, port) {
+      if (store.listUsers().length === 0) {
+        warn(`user-management: no users registered — open the gateway URL to register the first admin`)
+      }
+      const hosts = (cfg.sites || []).flatMap((s) => s.hosts || [])
+      if (hosts.length === 0 || (hosts.length === 1 && hosts[0] === 'localhost')) {
+        warn(`user-management: listening on port ${port} but no public hostname is configured — add sites[].hosts before exposing it`)
+      }
+    }
+
+    // ── self-heal: 60s HTTPS probe, rebuild only after 3 consecutive failures ─
+    let healthTimer = null
+    let checking = false
+    let healthFails = 0
+    const HEALTH_FAIL_LIMIT = 3
+
+    const primaryIPv4 = () => {
+      try {
+        for (const [name, addrs] of Object.entries(networkInterfaces())) {
+          if (/^(lo|Loopback)/i.test(name)) continue
+          if (/vEthernet|virtual|hyper-v/i.test(name)) continue
+          for (const a of addrs || []) {
+            if (a.family !== 'IPv4' || a.internal) continue
+            if (a.address.startsWith('169.254.')) continue
+            return a.address
+          }
+        }
+      } catch { /* fall through to loopback */ }
+      return null
+    }
+
+    const probeHttps = (host, port, timeoutMs = 4000) =>
+      new Promise((resolve) => {
+        let settled = false
+        const done = (ok) => { if (settled) return; settled = true; req.destroy(); resolve(ok) }
+        const req = httpsRequest(
+          { host, port, path: '/', method: 'GET', rejectUnauthorized: false, timeout: timeoutMs, headers: { Host: host } },
+          (res) => { res.resume(); done(true) },
+        )
+        req.on('timeout', () => done(false))
+        req.on('error', () => done(false))
+        req.end()
+      })
+
+    const startHealthCheck = () => { stopHealthCheck(); healthTimer = setInterval(() => { void checkHealth() }, 60000); healthTimer.unref && healthTimer.unref() }
+    const stopHealthCheck = () => { if (healthTimer) { clearInterval(healthTimer); healthTimer = null } }
+    const checkHealth = async () => {
+      const gw = current
+      if (!gw || typeof gw.port !== 'number' || checking) return
+      checking = true
+      try {
+        const host =
+          currentOptions && currentOptions.listenHost === '0.0.0.0'
+            ? (primaryIPv4() || '127.0.0.1')
+            : ((currentOptions && currentOptions.listenHost) || '127.0.0.1')
+        const ok = await probeHttps(host, gw.port)
+        if (current !== gw) return
+        if (ok) { if (healthFails > 0) healthFails = 0; return }
+        healthFails += 1
+        if (healthFails >= HEALTH_FAIL_LIMIT) {
+          healthFails = 0
+          warn(`user-management: HTTPS health check failed ${HEALTH_FAIL_LIMIT}x consecutively — listener not serving, restarting`)
+          await queueRebuild(true)
+        } else {
+          warn(`user-management: HTTPS health check failed (${healthFails}/${HEALTH_FAIL_LIMIT}) — will retry`)
+        }
+      } finally {
+        checking = false
+      }
+    }
+
+    // ── /user-management/panel — admin-only status (reached via the gateway proxy) ─
     ctx.effect(() => ctx.webServer.register({
-      kind: 'exact',
-      path: '/login',
+      kind: 'prefix',
+      path: '/user-management/panel',
       handler: async (req, res) => {
         const method = (req.method || 'GET').toUpperCase()
         if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' })
         await ready
-        const html = renderLoginPage({ hasUsers: store.listUsers().length > 0, title: config.title || 'DSH 控制台' })
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        res.end(html)
+        const cookies = parseCookies(req.headers && req.headers.cookie)
+        const session = await store.resolveSession(cookies[SESSION_COOKIE])
+        if (!session || session.user.role !== 'admin') return sendJson(res, 403, { error: '需要管理员权限' })
+        const cfg = resolvedConfig()
+        const phase = cfg.enabled === false ? 'disabled' : restarting ? 'restarting' : current ? 'running' : lastError ? 'error' : 'stopped'
+        return sendJson(res, 200, {
+          version: require('../package.json').version,
+          enabled: cfg.enabled !== false,
+          phase,
+          startedAt,
+          lastError,
+          listenHost: cfg.listenHost,
+          port: (current && current.port) || cfg.port,
+          sites: (cfg.sites || []).map((s) => ({ hosts: s.hosts || [], cert: s.cert ? 'file' : 'auto' })),
+          users: store.listUsers().length,
+        })
       },
-    }), `${pluginName}: login page`)
+    }), `${pluginName}: panel route`)
 
-    // /user-management/api/*
-    ctx.effect(() => ctx.webServer.register({
-      kind: 'prefix',
-      path: API_PREFIX,
-      handler: async (req, res) => {
+    // ── settings namespace: hot-reload on every committed change ────────────
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['settings'], (scope) => {
         try {
-          await ready
-          await handleApi(req, res, deps)
+          const registration = scope.settings.register('user-management', Config, { base: config })
+          settingsScope = registration
+          registration.watch(() => { void queueRebuild() })
+          void queueRebuild()
         } catch (error) {
-          if (!res.headersSent) sendJson(res, 500, { error: String((error && error.message) || error) })
-          else res.end()
+          warn(`user-management: settings namespace unavailable, using the composition config only — ${error.message || error}`)
+          void queueRebuild()
         }
-      },
-    }), `${pluginName}: api route`)
+      })
+    }
 
-    // Global auth gate (hard: listener re-order; degraded: prefix '/' route)
-    ctx.effect(() => {
-      const auditEntry = (session, method, path, ip, status, type) => ({
-        type,
-        username: session ? session.user.username : null,
-        userId: session ? session.user.id : null,
-        ip,
-        method,
-        path,
-        status: status === undefined ? null : status,
-      })
-      const decider = createDecider({
-        resolveSession: async (token) => {
-          await ready
-          return store.resolveSession(token)
-        },
-        getClientIp: clientIp,
-        isBanned: (ip) => store.isBanned(ip),
-        onAccess: (req, resolved, path) => {
-          store.appendActivity({
-            type: 'access',
-            username: resolved ? resolved.user.username : null,
-            userId: resolved ? resolved.user.id : null,
-            ip: clientIp(req),
-            detail: path,
-          }).catch(() => {})
-        },
-      })
-      const hooks = {
-        onApiRequest: (req, session, path, status) => {
-          store.appendAudit(auditEntry(session, (req.method || 'GET').toUpperCase(), path, clientIp(req), status, 'api')).catch(() => {})
-        },
-        onWsOpen: (req, session, path) => {
-          store.appendAudit(auditEntry(session, 'WS', path, clientIp(req), null, 'ws')).catch(() => {})
-        },
-      }
-      const installed = installGate(ctx.webServer, decider, hooks)
-      if (installed.mode === 'fallback') {
-        console.warn(`[${pluginName}] webServer.server unreachable — degraded to route-level gate; /api and /plugins are NOT gated`)
-      }
-      return installed.dispose
-    }, `${pluginName}: auth gate`)
+    // Profiles without a settings service still get the gateway from composition config.
+    void queueRebuild()
+
+    ctx.on('dispose', () => {
+      stopHealthCheck()
+      if (current) log('user-management: plugin disposed — stopping listener')
+      try { current && current.stop() } catch (e) { warn(`user-management: error stopping listener on dispose — ${e.message || e}`) }
+      current = null
+    })
   },
 }
+
+module.exports = plugin
