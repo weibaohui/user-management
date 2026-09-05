@@ -1118,15 +1118,12 @@ function UserManagementSection({ __t: t }) {
     me === null && h('div', { className: 'um-card um-muted' }, t('notLoggedIn')),
     me && (me.role === 'admin'
       ? h(AdminPanel, { me, __t: t, flash })
-      : h(MyPanel, { me, __t: t, flash })),
-    // the self-signed warning hits every gateway user, not just admins —
-    // keep the download / trust-bootstrap card visible for all roles
-    h(CertCard, { __t: t }))
+      : h(MyPanel, { me, __t: t, flash })))
 }
 
 function AdminPanel({ me, __t: t, flash }) {
   const [tab, setTab] = useState('users')
-  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')]]
+  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')], ['cert', t('certTitle')]]
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
     h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 } },
       h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
@@ -1135,7 +1132,8 @@ function AdminPanel({ me, __t: t, flash }) {
     tab === 'users' ? h(UsersTab, { me, __t: t, flash })
       : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
         : tab === 'bans' ? h(BansTab, { __t: t, flash })
-          : h(ActivityTab, { kind: tab, __t: t, flash }))
+          : tab === 'cert' ? h(CertCard, { __t: t })
+            : h(ActivityTab, { kind: tab, __t: t, flash }))
 }
 
 // ── module wiring ─────────────────────────────────────────────────────────
@@ -1149,7 +1147,7 @@ module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
   __boot,
-  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection },
+  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection, AdminPanel },
   apply(ctx) {
     ctx.locale.register(NS, 'zh', ZH)
     ctx.locale.register(NS, 'en', EN)
