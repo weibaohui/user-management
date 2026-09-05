@@ -127,6 +127,19 @@ window.__ModuleLoader__.load({
       unbanned: 'IP 已解封',
       selfIp: '（当前）',
       bannedShort: '已封',
+      certTitle: 'HTTPS 证书',
+      certHint: '把证书导入本机信任链后，浏览器不再弹出证书警告。下载前请核对指纹。',
+      certDownloadPem: '下载 PEM (.crt)',
+      certDownloadDer: '下载 DER (.cer)',
+      certFingerprint: '指纹 (SHA-256)',
+      certValid: '有效期',
+      certHosts: '覆盖名称',
+      certInstall: '导入信任链（选择你的系统）',
+      certUnavailable: 'HTTPS 网关未启用，证书信息不可用。',
+      certCopied: '已复制',
+      osMac: 'macOS',
+      osWin: 'Windows',
+      osLinux: 'Linux',
       typeUserCreated: '创建用户',
       typeUserDisabled: '禁用用户',
       typeUserEnabled: '启用用户',
@@ -226,6 +239,19 @@ window.__ModuleLoader__.load({
       unbanned: 'IP unbanned',
       selfIp: ' (current)',
       bannedShort: 'Banned',
+      certTitle: 'HTTPS Certificate',
+      certHint: 'Import this certificate into your trust store and browsers stop warning about the self-signed gateway. Verify the fingerprint before importing.',
+      certDownloadPem: 'Download PEM (.crt)',
+      certDownloadDer: 'Download DER (.cer)',
+      certFingerprint: 'Fingerprint (SHA-256)',
+      certValid: 'Valid until',
+      certHosts: 'Covered names',
+      certInstall: 'Import into the trust store (pick your OS)',
+      certUnavailable: 'HTTPS gateway not enabled — certificate info unavailable.',
+      certCopied: 'Copied',
+      osMac: 'macOS',
+      osWin: 'Windows',
+      osLinux: 'Linux',
       typeUserCreated: 'User created',
       typeUserDisabled: 'User disabled',
       typeUserEnabled: 'User enabled',
@@ -959,6 +985,73 @@ window.__ModuleLoader__.load({
                   h('td', null, h('button', { className: 'um-btn um-btn-danger', onClick: () => unban(entry) }, t('unbanAction')))))))))
     }
 
+    const CERT_FILE_PEM = 'user-management-gateway.crt'
+    const CERT_FILE_DER = 'user-management-gateway.cer'
+
+    /** Trust-store import commands, per OS, against the downloaded files. */
+    const CERT_INSTALL_COMMANDS = {
+      mac: `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/Downloads/${CERT_FILE_PEM}`,
+      win: `certutil -addstore -f Root "%USERPROFILE%\\Downloads\\${CERT_FILE_DER}"`,
+      linux: `sudo cp ~/Downloads/${CERT_FILE_PEM} /usr/local/share/ca-certificates/user-management-gateway.crt && sudo update-ca-certificates`,
+    }
+
+    /** Admin card: download the gateway cert (PEM/DER), verify the fingerprint
+     *  and copy the per-OS trust-store import command. Hidden entirely when the
+     *  gateway is absent (e.g. accessing dsh web directly, not via the HTTPS
+     *  gateway) — there is nothing to bootstrap there. */
+    function CertCard({ __t: t }) {
+      useEffect(ensureStyles, [])
+      const [info, setInfo] = useState(undefined) // undefined = loading, null = unavailable
+      const [os, setOs] = useState('mac')
+      const [copied, setCopied] = useState('')
+
+      useEffect(() => { api('/cert-info').then(setInfo).catch(() => setInfo(null)) }, [])
+      if (info === null) return null
+
+      const copy = (tag, text) => {
+        try {
+          navigator.clipboard.writeText(text).then(() => {
+            setCopied(tag)
+            setTimeout(() => setCopied(''), 2000)
+          }, () => {})
+        } catch { /* clipboard unavailable */ }
+      }
+
+      return h('div', { className: 'um-card' },
+        h('div', { className: 'um-head', style: { marginBottom: 10 } },
+          h('h3', { className: 'um-title' }, t('certTitle')),
+          h('div', { className: 'um-row' },
+            h('a', { className: 'um-btn', href: '/user-management/api/cert', download: CERT_FILE_PEM }, t('certDownloadPem')),
+            h('a', { className: 'um-btn', href: '/user-management/api/cert?format=der', download: CERT_FILE_DER }, t('certDownloadDer')))),
+        h('p', { className: 'um-muted', style: { margin: '0 0 10px' } }, t('certHint')),
+        info === undefined
+          ? h('div', { className: 'um-muted' }, t('loading'))
+          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+            h('div', null,
+              h('div', { className: 'um-muted', style: { fontSize: 11, marginBottom: 3 } }, t('certFingerprint')),
+              h('div', { className: 'um-row' },
+                h('code', { style: { fontSize: 12, wordBreak: 'break-all' } }, info.fingerprint),
+                h('button', { className: 'um-btn', style: { padding: '0 8px', fontSize: 11 }, onClick: () => copy('fp', info.fingerprint) },
+                  copied === 'fp' ? t('certCopied') : t('copy')))),
+            h('div', { className: 'um-row' },
+              h('span', { className: 'um-muted' }, `${t('certValid')}:`),
+              h('span', null, info.notAfter)),
+            h('div', null,
+              h('div', { className: 'um-muted', style: { fontSize: 11, marginBottom: 3 } }, t('certHosts')),
+              h('div', { className: 'um-row' }, (info.hosts || []).map((hostName) =>
+                h('span', { key: hostName, className: 'um-badge' }, hostName)))),
+            h('div', null,
+              h('div', { className: 'um-muted', style: { fontSize: 11, marginBottom: 3 } }, t('certInstall')),
+              h('div', { className: 'um-row', style: { marginBottom: 6 } },
+                ['mac', 'win', 'linux'].map((key) => h('button', {
+                  key, className: os === key ? 'um-tab active' : 'um-tab', onClick: () => setOs(key),
+                }, t(key === 'mac' ? 'osMac' : key === 'win' ? 'osWin' : 'osLinux')))),
+              h('div', { className: 'um-row' },
+                h('code', { style: { fontSize: 12, wordBreak: 'break-all', flex: 1 } }, CERT_INSTALL_COMMANDS[os]),
+                h('button', { className: 'um-btn', style: { flex: 'none' }, onClick: () => copy(os, CERT_INSTALL_COMMANDS[os]) },
+                  copied === os ? t('certCopied') : t('copy'))))))
+    }
+
     function MyPanel({ me, __t: t, flash }) {
       const [oldPwd, setOldPwd] = useState('')
       const [newPwd, setNewPwd] = useState('')
@@ -1049,7 +1142,8 @@ window.__ModuleLoader__.load({
         tab === 'users' ? h(UsersTab, { me, __t: t, flash })
           : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
             : tab === 'bans' ? h(BansTab, { __t: t, flash })
-              : h(ActivityTab, { kind: tab, __t: t, flash }))
+              : h(ActivityTab, { kind: tab, __t: t, flash }),
+        h(CertCard, { __t: t }))
     }
 
     // ── module wiring ─────────────────────────────────────────────────────────
@@ -1063,7 +1157,7 @@ window.__ModuleLoader__.load({
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
       __boot,
-      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu },
+      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS },
       apply(ctx) {
         ctx.locale.register(NS, 'zh', ZH)
         ctx.locale.register(NS, 'en', EN)
