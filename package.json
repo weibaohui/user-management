@@ -1,6 +1,6 @@
 {
   "name": "@weibaohui/user-management",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "dsh 插件 · 用户管理：给 dsh web 加登录门禁——未登录访问弹登录/注册页，首个注册者自动成为管理员；管理员可管理所有用户（删除、重置密码、角色调整）并查看登录记录与访问记录，普通用户只能查看和修改自己的信息。",
   "license": "MIT",
   "keywords": [
