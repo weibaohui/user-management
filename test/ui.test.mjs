@@ -178,3 +178,17 @@ test('cert install commands cover mac/win/linux and reference the downloads', ()
   assert.ok(CERT_INSTALL_COMMANDS.mac.includes('user-management-gateway.crt'))
   assert.ok(CERT_INSTALL_COMMANDS.win.includes('user-management-gateway.cer'))
 })
+
+test('cert card is rendered at the section level — visible to every role', () => {
+  const { UserManagementSection, CertCard } = plugin.__internals
+  const el = UserManagementSection({ __t: (k) => k })
+  assert.ok(el, 'section renders under the shim (session still loading)')
+  let found = false
+  const walk = (node) => {
+    if (!node || typeof node !== 'object' || found) return
+    if (node.type === CertCard) { found = true; return }
+    for (const kid of node.kids || []) walk(kid)
+  }
+  walk(el)
+  assert.ok(found, 'CertCard mounts outside the admin panel, for admins and plain users alike')
+})

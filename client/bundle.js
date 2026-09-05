@@ -1128,7 +1128,10 @@ window.__ModuleLoader__.load({
         me === null && h('div', { className: 'um-card um-muted' }, t('notLoggedIn')),
         me && (me.role === 'admin'
           ? h(AdminPanel, { me, __t: t, flash })
-          : h(MyPanel, { me, __t: t, flash })))
+          : h(MyPanel, { me, __t: t, flash })),
+        // the self-signed warning hits every gateway user, not just admins —
+        // keep the download / trust-bootstrap card visible for all roles
+        h(CertCard, { __t: t }))
     }
 
     function AdminPanel({ me, __t: t, flash }) {
@@ -1142,8 +1145,7 @@ window.__ModuleLoader__.load({
         tab === 'users' ? h(UsersTab, { me, __t: t, flash })
           : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
             : tab === 'bans' ? h(BansTab, { __t: t, flash })
-              : h(ActivityTab, { kind: tab, __t: t, flash }),
-        h(CertCard, { __t: t }))
+              : h(ActivityTab, { kind: tab, __t: t, flash }))
     }
 
     // ── module wiring ─────────────────────────────────────────────────────────
@@ -1157,7 +1159,7 @@ window.__ModuleLoader__.load({
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
       __boot,
-      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS },
+      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection },
       apply(ctx) {
         ctx.locale.register(NS, 'zh', ZH)
         ctx.locale.register(NS, 'en', EN)
