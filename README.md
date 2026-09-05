@@ -45,7 +45,7 @@ v0.4 起，本插件自带 HTTPS 远程访问网关：dsh web 留在 loopback（
 | `enabled` | `true` | 关掉则不启动网关监听器 |
 | `listenHost` | `0.0.0.0` | 网关监听地址；`127.0.0.1` 仅本机可达 |
 | `port` | `19843` | 网关 HTTPS 端口 |
-| `sites[]` | `[]`（=自动） | 站点白名单 + 证书；空 = 自动枚举本机所有 IP |
+| `sites[]` | `[]`（=自动） | 站点白名单 + 证书；空 = 自动枚举本机所有 IP，并附带每个 IP 的 `sslip.io` / `nip.io` 通配 DNS 别名 |
 | `sites[].hosts` | — | Host 白名单（域名/IP，支持 `*.example.com` 通配） |
 | `sites[].cert` / `sites[].key` | `''` | PEM 文件路径（fullchain + privkey）；不配则按 hosts 自签 |
 | `title` | `DSH 控制台` | 登录页标题 |
@@ -81,6 +81,7 @@ user-management:
 - **门禁是"进门"级别**：进门之后，所有登录用户看到的是同一个 dsh 实例的会话与数据——本插件做的是"谁能访问"，不是多用户数据隔离
 - **拦截机制**：v0.4 起门禁是独立 HTTPS 网关监听器（`node:https`，见上文「Remote Gateway 配置」）——所有请求先过网关的会话校验（未登录 document 跳 `/login`，API/WS 返 401），通过后才反代到 loopback dsh web；不再依赖宿主 `webServer.server` 监听器重排（旧版 0.3 的 attachGate + 降级路由级网关已移除）
 - **开放注册**：注册始终开放（新账号均为普通用户），请勿将 dsh web 暴露给不受信任的网络
+- **证书下载与信任引导**：网关免登录提供 `GET /user-management/api/cert`（PEM，`?format=der` 得 Windows 用的 .cer）与 `GET /user-management/api/cert-info`（SHA-256 指纹 / 有效期 / 覆盖名称）。设置页「HTTPS 证书」卡片一键下载 + 复制各系统导入命令。自签证书不会因 SAN 完整而不弹警告——**消除警告靠导入信任链**（导入后 IP / sslip.io / nip.io 三种访问方式全部干净）；公网 IP 可用 Let's Encrypt 给 `<ip>.sslip.io` 签真证书实现真正零警告；**Tailscale 用户优先用 `tailscale cert` + `机器名.尾网名.ts.net`**（真 CA 证书、零警告），尾网 IP 的 SAN 别名仅作兜底
 - **审计口径**：操作日志不记录请求体内容与静态资源；被门禁拒绝的请求（401/302）不记录，防止扫描刷屏；临时密码、明文密码永不落盘、不进日志
 
 ## 联系我 :飞书群

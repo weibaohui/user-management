@@ -445,6 +445,19 @@ function allLocalIPs(interfaces) {
 }
 
 /**
+ * Auto-site host list: every local IP plus its sslip.io / nip.io wildcard-DNS
+ * aliases. Purely additive SAN coverage — trusting the self-signed cert once
+ * then makes IP, pretty-name and wildcard-DNS access all warning-free. (It
+ * does NOT remove the untrusted-cert warning by itself; for public IPs a real
+ * Let's Encrypt cert via these names is the zero-warning path, and on
+ * Tailscale `tailscale cert` + ts.net names remain the better choice.)
+ */
+function autoSiteHosts(ips) {
+  const list = (ips || []).map(String)
+  return ['localhost', ...list, ...list.flatMap((ip) => [`${ip}.sslip.io`, `${ip}.nip.io`])]
+}
+
+/**
  * The empty-user-store guard. Previously REFUSED to start a non-loopback
  * listener with no registered users (forcing the first admin registration
  * onto loopback). Relaxed to a no-op under the zero-config default (Option B):
@@ -474,6 +487,7 @@ const plugin = {
     Config,
     emptyUsersGuard,
     allLocalIPs,
+    autoSiteHosts,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'
@@ -570,7 +584,7 @@ const plugin = {
           // whitelist + their own cert).
           const sites = (cfg.sites && cfg.sites.length)
             ? cfg.sites
-            : [{ hosts: ['localhost', ...allLocalIPs()], cert: '', key: '' }]
+            : [{ hosts: autoSiteHosts(allLocalIPs()), cert: '', key: '' }]
           const options = {
             listenHost: cfg.listenHost,
             port: cfg.port,

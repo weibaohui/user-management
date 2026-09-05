@@ -76,6 +76,25 @@ function createGateway(options) {
   })
   const defaultSite = contexts[0]
 
+  // Certificate material for the download endpoints. The certificate is
+  // public by nature (broadcast in every TLS handshake) — serving it
+  // unauthenticated is the whole point: a first-time visitor fetches it,
+  // imports it into their trust store, and the self-signed warning goes
+  // away for good. Computed once per gateway instance.
+  let certMaterial = null
+  try {
+    const x509 = new X509Certificate(defaultSite.certPem)
+    certMaterial = {
+      pem: defaultSite.certPem,
+      der: x509.raw,
+      fingerprint: x509.fingerprint256,
+      notBefore: x509.validFrom,
+      notAfter: x509.validTo,
+      subject: x509.subject,
+    }
+  } catch { /* malformed cert — the endpoints answer 404 */ }
+  const allHosts = [...new Set(sites.flatMap((s) => s.hosts))]
+
   /** Host matching: exact, bare wildcard, or *.example.com wildcard. */
   function hostMatches(pattern, host) {
     if (pattern === host || pattern === '*') return true
@@ -151,6 +170,28 @@ function createGateway(options) {
       return sendUnauthorized(res)
     }
     if (decision.action === 'forbidden') return sendForbidden(res)
+
+    // /user-management/api/cert[?format=der] + /cert-info — public material,
+    // served before the auth gate so a first-time (still untrusted) visitor
+    // can download the cert and bootstrap trust. IP bans still apply (the
+    // decider above ran already).
+    if (certMaterial && method === 'GET' && path === `${API_PREFIX}/cert`) {
+      const wantDer = url.searchParams.get('format') === 'der'
+      return send(res, 200, {
+        'content-type': wantDer ? 'application/x-x509-ca-cert' : 'application/x-pem-file',
+        'content-disposition': `attachment; filename="user-management-gateway.${wantDer ? 'cer' : 'crt'}"`,
+        'cache-control': 'no-store',
+      }, wantDer ? certMaterial.der : certMaterial.pem)
+    }
+    if (certMaterial && method === 'GET' && path === `${API_PREFIX}/cert-info`) {
+      return send(res, 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, JSON.stringify({
+        fingerprint: certMaterial.fingerprint,
+        notBefore: certMaterial.notBefore,
+        notAfter: certMaterial.notAfter,
+        subject: certMaterial.subject,
+        hosts: allHosts,
+      }))
+    }
 
     // /login — standalone login/register page (register tab is default on a
     // fresh system; first registrant becomes admin). Authed users bounce to /.

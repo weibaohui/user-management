@@ -162,3 +162,19 @@ test('change-password dialog carries old/new/confirm inputs', () => {
   assert.ok(inputs.every((i) => i.props.required), 'all three required')
   assert.equal(inputs[1].props.minLength, 6, 'native length gate on the new password')
 })
+
+test('cert card: renders while loading, hides when the gateway is absent', () => {
+  const { CertCard } = plugin.__internals
+  const loading = CertCard({ __t: (k) => k })
+  assert.ok(loading, 'renders the card shell while cert-info loads')
+  assert.equal(loading.props.className, 'um-card')
+})
+
+test('cert install commands cover mac/win/linux and reference the downloads', () => {
+  const { CERT_INSTALL_COMMANDS } = plugin.__internals
+  assert.match(CERT_INSTALL_COMMANDS.mac, /security add-trusted-cert/)
+  assert.match(CERT_INSTALL_COMMANDS.win, /certutil -addstore -f Root/)
+  assert.match(CERT_INSTALL_COMMANDS.linux, /update-ca-certificates/)
+  assert.ok(CERT_INSTALL_COMMANDS.mac.includes('user-management-gateway.crt'))
+  assert.ok(CERT_INSTALL_COMMANDS.win.includes('user-management-gateway.cer'))
+})
