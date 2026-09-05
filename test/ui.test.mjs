@@ -179,16 +179,17 @@ test('cert install commands cover mac/win/linux and reference the downloads', ()
   assert.ok(CERT_INSTALL_COMMANDS.win.includes('user-management-gateway.cer'))
 })
 
-test('cert card is rendered at the section level — visible to every role', () => {
-  const { UserManagementSection, CertCard } = plugin.__internals
-  const el = UserManagementSection({ __t: (k) => k })
-  assert.ok(el, 'section renders under the shim (session still loading)')
-  let found = false
+test('the HTTPS certificate lives in its own tab, right after IP bans', () => {
+  const { AdminPanel } = plugin.__internals
+  const el = AdminPanel({ me: { id: 'u1', username: 'a', role: 'admin' }, __t: (k) => k, flash: () => {} })
+  assert.ok(el, 'admin panel renders under the shim')
+  const labels = []
   const walk = (node) => {
-    if (!node || typeof node !== 'object' || found) return
-    if (node.type === CertCard) { found = true; return }
+    if (!node || typeof node !== 'object') return
+    if (node.props && String(node.props.className || '').split(' ').includes('um-tab')) labels.push(node.kids[0])
     for (const kid of node.kids || []) walk(kid)
   }
   walk(el)
-  assert.ok(found, 'CertCard mounts outside the admin panel, for admins and plain users alike')
+  assert.deepEqual(labels, ['tabUsers', 'tabLoginLog', 'tabAccessLog', 'tabAuditLog', 'tabBans', 'certTitle'],
+    'cert tab sits last, right after the bans tab')
 })
