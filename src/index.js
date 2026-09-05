@@ -394,7 +394,7 @@ async function handleApi(req, res, deps) {
 // ── schemastery config (the `user-management:` settings namespace) ──────────
 const Config = z.object({
   enabled: z.boolean().default(true),
-  listenHost: z.string().default('127.0.0.1'),
+  listenHost: z.string().default('0.0.0.0'),
   port: z.natural().min(1).max(65535).default(19843),
   sites: z
     .array(
@@ -404,7 +404,7 @@ const Config = z.object({
         key: z.string().default(''),
       }),
     )
-    .default([{ hosts: ['localhost'], cert: '', key: '' }]),
+    .default([]), // empty = auto-enumerate all local IPs (see allLocalIPs)
   title: z.string().default('DSH 控制台'),
   // Reserved (accepted, not wired): the store owns session lifetime, login
   // failure is not auto-locked (admins set IP bans instead), and handleApi
@@ -416,18 +416,44 @@ const Config = z.object({
 })
 
 /**
- * Fail-closed gate, analogous to dsh-gateway's admin/change-me guard but for
- * an empty user store: a non-loopback listener with NO registered users would
- * let the first caller register as admin over the network. Refuse to start
- * (keep any running listener up) until the first admin is registered on
- * loopback. Returns an error message or null when safe to apply.
+ * Enumerate every non-loopback local IP (IPv4 + IPv6, including Tailscale):
+ * skips lo/Loopback + vEthernet/virtual/hyper-v interface names, internal
+ * addresses, IPv4 APIPA (169.254.), IPv6 loopback (::1) and link-local
+ * (fe80::). Accepts an optional `interfaces` arg (defaults to
+ * node:os.networkInterfaces()) so the filter is unit-testable with a stub.
  */
-function emptyUsersGuard(cfg, store) {
-  const listenHost = String(cfg && cfg.listenHost || '')
-  const loopbackOnly = /^(127\.0\.0\.1|::1|localhost)$/i.test(listenHost)
-  if (!loopbackOnly && store.listUsers().length === 0) {
-    return 'refusing to apply: non-loopback listener with no registered users — register the first admin on loopback first (open the gateway URL from the host)'
+function allLocalIPs(interfaces) {
+  const ifaces = interfaces || (() => { try { return networkInterfaces() } catch { return {} } })()
+  const out = []
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (/^(lo|Loopback)/i.test(name)) continue
+    if (/vEthernet|virtual|hyper-v/i.test(name)) continue
+    for (const a of addrs || []) {
+      if (a.internal) continue
+      const addr = a.address || ''
+      if (!addr) continue
+      if (a.family === 'IPv4') {
+        if (addr.startsWith('169.254.')) continue
+        out.push(addr)
+      } else if (a.family === 'IPv6') {
+        if (addr === '::1' || addr.startsWith('fe80:')) continue
+        out.push(addr)
+      }
+    }
   }
+  return out
+}
+
+/**
+ * The empty-user-store guard. Previously REFUSED to start a non-loopback
+ * listener with no registered users (forcing the first admin registration
+ * onto loopback). Relaxed to a no-op under the zero-config default (Option B):
+ * a non-loopback listener with no users STARTS and the first visitor
+ * registers as admin (the user-management model). The safety message moved
+ * to bootWarnings, which warns (does not refuse) in that case. Always returns
+ * null (safe to apply); kept + exported for tests + forward use.
+ */
+function emptyUsersGuard() {
   return null
 }
 
@@ -447,6 +473,7 @@ const plugin = {
     AUDIT_LIMIT_DEFAULT,
     Config,
     emptyUsersGuard,
+    allLocalIPs,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'
@@ -536,28 +563,19 @@ const plugin = {
             startedAt = null
             return
           }
-          // Fail-closed: refuse a non-loopback listener with no users.
-          const guardError = emptyUsersGuard(cfg, store)
-          if (guardError) {
-            restarting = false
-            if (current && !force) {
-              warn(`user-management: ${guardError} — kept the running listener; register the first admin or restrict to loopback`)
-            } else {
-              stopHealthCheck()
-              try { current && current.stop() } catch (e) { warn(`user-management: error stopping listener — ${e.message || e}`) }
-              current = null
-              currentOptions = null
-              startedAt = null
-              lastError = guardError
-              warn(`user-management: ${guardError}`)
-            }
-            return
-          }
+          // Auto-sites: when the user did not configure sites, enumerate every
+          // non-loopback local IP (+ localhost) so the gateway is reachable on
+          // the LAN/Tailscale out of the box, with a self-signed cert whose SAN
+          // covers them all. User-configured sites are used as-is (their own
+          // whitelist + their own cert).
+          const sites = (cfg.sites && cfg.sites.length)
+            ? cfg.sites
+            : [{ hosts: ['localhost', ...allLocalIPs()], cert: '', key: '' }]
           const options = {
             listenHost: cfg.listenHost,
             port: cfg.port,
             upstream: resolveUpstream(cfg),
-            sites: cfg.sites || [{ hosts: ['localhost'] }],
+            sites,
             certsDir,
             title: cfg.title,
             decider,
@@ -611,7 +629,7 @@ const plugin = {
             currentOptions = options
             startedAt = new Date().toISOString()
             restarting = false
-            bootWarnings(cfg, port)
+            bootWarnings(cfg, sites, port)
             startHealthCheck()
           } catch (error) {
             restarting = false
@@ -624,11 +642,13 @@ const plugin = {
       return rebuildChain
     }
 
-    function bootWarnings(cfg, port) {
-      if (store.listUsers().length === 0) {
-        warn(`user-management: no users registered — open the gateway URL to register the first admin`)
+    function bootWarnings(cfg, sites, port) {
+      const listenHost = String((cfg && cfg.listenHost) || '')
+      const loopbackOnly = /^(127\.0\.0\.1|::1|localhost)$/i.test(listenHost)
+      if (!loopbackOnly && store.listUsers().length === 0) {
+        warn(`user-management: non-loopback listener with no registered users — the first visitor will register as admin; ensure the network is trusted (or register the first admin on loopback 127.0.0.1:${port} first)`)
       }
-      const hosts = (cfg.sites || []).flatMap((s) => s.hosts || [])
+      const hosts = (sites || []).flatMap((s) => s.hosts || [])
       if (hosts.length === 0 || (hosts.length === 1 && hosts[0] === 'localhost')) {
         warn(`user-management: listening on port ${port} but no public hostname is configured — add sites[].hosts before exposing it`)
       }
@@ -640,20 +660,8 @@ const plugin = {
     let healthFails = 0
     const HEALTH_FAIL_LIMIT = 3
 
-    const primaryIPv4 = () => {
-      try {
-        for (const [name, addrs] of Object.entries(networkInterfaces())) {
-          if (/^(lo|Loopback)/i.test(name)) continue
-          if (/vEthernet|virtual|hyper-v/i.test(name)) continue
-          for (const a of addrs || []) {
-            if (a.family !== 'IPv4' || a.internal) continue
-            if (a.address.startsWith('169.254.')) continue
-            return a.address
-          }
-        }
-      } catch { /* fall through to loopback */ }
-      return null
-    }
+    // Self-heal probe picks the first non-loopback IPv4 (falls back to loopback).
+    const primaryIPv4 = () => allLocalIPs().find((ip) => ip.includes('.')) || null
 
     const probeHttps = (host, port, timeoutMs = 4000) =>
       new Promise((resolve) => {

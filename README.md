@@ -34,10 +34,52 @@ dsh plugin --profile web add @weibaohui/user-management -w
 5. 数据与审计文件都在 `~/.dsh/user-management/`（`users.json` / `sessions.json` / `activity.jsonl` / `audit.jsonl` / `bans.json`，0600 权限，原子写；审计账本滚动保留最近 5000 条）
 6. **IP 封禁按连接源地址（`remoteAddress`）判定**：若部署在反向代理之后，看到的是代理的 IP——需要按真实客户端 IP 封禁时请勿加代理层直连使用
 
+## Remote Gateway 配置
+
+v0.4 起，本插件自带 HTTPS 远程访问网关：dsh web 留在 loopback（`127.0.0.1:3080`），网关（独立 `node:https` 监听器）反代到它——**网关是唯一对外入口，认证不可绕过**。配置走 `~/.dsh/settings.yaml` 的 `user-management:` 段（也支持设置页热生效）。
+
+### 字段
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `true` | 关掉则不启动网关监听器 |
+| `listenHost` | `0.0.0.0` | 网关监听地址；`127.0.0.1` 仅本机可达 |
+| `port` | `19843` | 网关 HTTPS 端口 |
+| `sites[]` | `[]`（=自动） | 站点白名单 + 证书；空 = 自动枚举本机所有 IP |
+| `sites[].hosts` | — | Host 白名单（域名/IP，支持 `*.example.com` 通配） |
+| `sites[].cert` / `sites[].key` | `''` | PEM 文件路径（fullchain + privkey）；不配则按 hosts 自签 |
+| `title` | `DSH 控制台` | 登录页标题 |
+| `sessionDays` / `loginFailLimit` / `lockoutSeconds` / `maxBodyBytes` | `7` / `5` / `60` / `16384` | 预留字段（当前未接线：会话由 store 管、登录失败靠管理员 IP 封禁、body 上限在 API 内） |
+
+### 场景 1：零配置（推荐 · 私网）
+
+不配 `sites` → 网关自动枚举本机所有非 loopback IP（IPv4 + IPv6，含 Tailscale）填进 hosts，并签发 **100 年自签证书**（SAN 覆盖这些 IP + localhost）；`listenHost` 默认 `0.0.0.0`。打开 `https://<本机任意 IP>:19843` → 信任自签证书 → 注册/登录（**首个访问者即管理员**）。
+
+### 场景 2：域名 + 证书
+
+```yaml
+user-management:
+  listenHost: '0.0.0.0'
+  port: 19843
+  sites:
+    - hosts: ['dsh.example.com']
+      cert: '/etc/letsencrypt/live/dsh.example.com/fullchain.pem'
+      key:  '/etc/letsencrypt/live/dsh.example.com/privkey.pem'
+```
+
+- `cert` / `key` 是 PEM 文件路径（fullchain + privkey，如 `certbot certonly -d <域名>` 申请）；配了就加载你的证书，不配则按 hosts 自签。
+- 多域名走多项 `sites`（每项自己的 `hosts` + `cert` + `key`），网关按 SNI 选证书。
+
+### 安全边界
+
+- **零配置下首个访问者即管理员**——仅适用于可信私网（Tailscale 等）；公网暴露前请：配 `sites` 白名单 + 用域名证书 + 先在 loopback（`https://127.0.0.1:19843`）注册首个 admin 再对外。
+- 自签证书 100 年有效，持久化在 `~/.dsh/user-management/certs/`；**改了 hosts/SAN 后删旧证书文件重启才会重签**（否则复用旧证书保指纹稳定）。
+- dsh web 始终留在 loopback，网关是唯一对外入口——直连 3080 绕不过认证。
+
 ## 安全边界（务必阅读）
 
 - **门禁是"进门"级别**：进门之后，所有登录用户看到的是同一个 dsh 实例的会话与数据——本插件做的是"谁能访问"，不是多用户数据隔离
-- **拦截机制**：宿主路由表没有中间件机制，插件通过宿主公开的 `webServer.server` 实例重排 `request` / `upgrade` 监听器实现真·全局拦截（含 `/api`、`/plugins`）；这属于对公开字段的非常规使用，dsh 大版本升级后可能失效——失效时自动降级为路由级网关（`/api` 由宿主自带的 Host/Origin 信任检查兜底），启动日志会明确提示 `degraded to route-level gate`
+- **拦截机制**：v0.4 起门禁是独立 HTTPS 网关监听器（`node:https`，见上文「Remote Gateway 配置」）——所有请求先过网关的会话校验（未登录 document 跳 `/login`，API/WS 返 401），通过后才反代到 loopback dsh web；不再依赖宿主 `webServer.server` 监听器重排（旧版 0.3 的 attachGate + 降级路由级网关已移除）
 - **开放注册**：注册始终开放（新账号均为普通用户），请勿将 dsh web 暴露给不受信任的网络
 - **审计口径**：操作日志不记录请求体内容与静态资源；被门禁拒绝的请求（401/302）不记录，防止扫描刷屏；临时密码、明文密码永不落盘、不进日志
 

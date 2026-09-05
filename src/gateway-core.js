@@ -259,7 +259,7 @@ function createGateway(options) {
       const onError = (err) => { server.removeListener('listening', onListening); reject(err) }
       server.once('listening', onListening)
       server.once('error', onError)
-      server.listen({ host: options.listenHost || '0.0.0.0', port: options.port || 19843 })
+      server.listen({ host: options.listenHost || '0.0.0.0', port: options.port != null ? options.port : 19843 })
     })
     boundPort = server.address().port
     server.on('error', (err) => {

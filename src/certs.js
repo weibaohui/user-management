@@ -4,12 +4,15 @@
  * TLS material for one gateway site: loads a supplied certificate pair, or
  * generates a self-signed one (persisted under the certs dir so the
  * fingerprint stays stable across restarts — regenerating every boot would
- * break any client that pinned or trusted the previous cert).
+ * break any client that pinned or trusted the previous cert). Self-signed
+ * certs are issued for 100 years (days 36500). Persisted certs are NOT
+ * regenerated automatically: to pick up a new expiry or a changed SAN set,
+ * delete the cert/key files under the certs dir and restart.
  *
  * Ported from dsh-gateway (clarknu/dsh-gateway) lib/certs.js, adapted to
- * CommonJS. SANs cover every host the site declares, as DNS or IP entries,
- * so modern browsers (which validate against the SAN list, not the CN)
- * accept the self-signed certificate for each configured name.
+ * CommonJS. SANs cover every host the site declares, as DNS or IP entries
+ * (IPv4 + IPv6), so modern browsers (which validate against the SAN list,
+ * not the CN) accept the self-signed certificate for each configured name.
  */
 
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs')
@@ -17,6 +20,9 @@ const { join } = require('node:path')
 const selfsigned = require('selfsigned')
 
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
+// IPv6 literal: hex digits + colons only, and must contain at least one colon
+// (so a hex-only hostname like "cafe" is not misread as an IPv6 address).
+const IPV6_RE = /^[0-9a-fA-F:]+$/
 
 /** Load the configured PEM pair, or generate + persist a self-signed one. */
 function loadOrCreateSiteCert({ cert, key, hosts }, certsDir, log) {
@@ -45,7 +51,7 @@ function loadOrCreateSiteCert({ cert, key, hosts }, certsDir, log) {
   const pems = selfsigned.generate(
     [{ name: 'commonName', value: primary }],
     {
-      days: 3650,
+      days: 36500,
       keySize: 2048,
       algorithm: 'sha256',
       extensions: [
@@ -70,10 +76,14 @@ function loadOrCreateSiteCert({ cert, key, hosts }, certsDir, log) {
   return { cert: pems.cert, key: pems.private, auto: true, certPath: crtPath, keyPath: keyPath }
 }
 
-/** node-forge SAN entries: type 2 = DNS, type 7 = IPv4 literal. */
+/** node-forge SAN entries: type 2 = DNS, type 7 = iPAddress (IPv4 or IPv6 literal). */
 function sanEntries(hosts, primary) {
   const names = [...new Set([...(hosts || []), primary].filter((h) => h && h !== '*'))]
-  return names.map((h) => (IPV4_RE.test(h) ? { type: 7, ip: h } : { type: 2, value: h }))
+  return names.map((h) => {
+    if (IPV4_RE.test(h)) return { type: 7, ip: h }
+    if (IPV6_RE.test(h) && h.includes(':')) return { type: 7, ip: h }
+    return { type: 2, value: h }
+  })
 }
 
 module.exports = { loadOrCreateSiteCert, sanEntries }
