@@ -458,6 +458,33 @@ function autoSiteHosts(ips) {
 }
 
 /**
+ * Resolve the effective site list from config + auto-enumerated local IPs.
+ *
+ * MERGE semantics (v0.5.4): the auto-enumerated host list — localhost, every
+ * non-loopback local IP and each IP's sslip.io / nip.io wildcard-DNS alias —
+ * ALWAYS forms the self-signed certificate site, so the gateway stays
+ * reachable on the LAN / Tailscale / loopback out of the box. Configured
+ * sites WITHOUT cert/key are folded into that self-signed site: their hosts
+ * are merged in (de-duplicated), covering names the local NICs can't see —
+ * e.g. a NAT'd public IP routed to this host that no local interface owns.
+ * Configured sites WITH cert/key are kept as independent SNI sites (real
+ * domain certs). Empty cfg.sites is the zero-config default (pure auto).
+ *
+ * Before v0.5.4 a configured sites array REPLACED the auto list entirely,
+ * dropping every local IP + alias and breaking local / LAN / Tailscale
+ * access with 421 (unknown host) the moment a user added any site.
+ */
+function resolveSites(cfg, autoIps) {
+  const configured = (cfg && cfg.sites && cfg.sites.length) ? cfg.sites : []
+  const extraHosts = configured
+    .filter((s) => !s.cert && !s.key)
+    .flatMap((s) => s.hosts || [])
+  const mergedHosts = [...new Set([...autoSiteHosts(autoIps), ...extraHosts])]
+  const domainSites = configured.filter((s) => s.cert || s.key)
+  return [{ hosts: mergedHosts, cert: '', key: '' }, ...domainSites]
+}
+
+/**
  * The empty-user-store guard. Previously REFUSED to start a non-loopback
  * listener with no registered users (forcing the first admin registration
  * onto loopback). Relaxed to a no-op under the zero-config default (Option B):
@@ -488,6 +515,7 @@ const plugin = {
     emptyUsersGuard,
     allLocalIPs,
     autoSiteHosts,
+    resolveSites,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'
@@ -577,14 +605,15 @@ const plugin = {
             startedAt = null
             return
           }
-          // Auto-sites: when the user did not configure sites, enumerate every
-          // non-loopback local IP (+ localhost) so the gateway is reachable on
-          // the LAN/Tailscale out of the box, with a self-signed cert whose SAN
-          // covers them all. User-configured sites are used as-is (their own
-          // whitelist + their own cert).
-          const sites = (cfg.sites && cfg.sites.length)
-            ? cfg.sites
-            : [{ hosts: autoSiteHosts(allLocalIPs()), cert: '', key: '' }]
+          // Site resolution (MERGE, v0.5.4): auto-enumerated hosts (localhost
+          // + every non-loopback local IP + their sslip.io / nip.io aliases)
+          // always form the self-signed cert site, so the gateway stays
+          // reachable on the LAN/Tailscale/loopback. Configured sites WITHOUT
+          // cert/key fold their hosts into that self-signed site (covers names
+          // the local NICs can't see, e.g. a NAT'd public IP); configured
+          // sites WITH cert/key stay independent SNI sites (real domain
+          // certs). Empty cfg.sites = pure auto (zero-config default).
+          const sites = resolveSites(cfg, allLocalIPs())
           const options = {
             listenHost: cfg.listenHost,
             port: cfg.port,
@@ -663,7 +692,12 @@ const plugin = {
         warn(`user-management: non-loopback listener with no registered users — the first visitor will register as admin; ensure the network is trusted (or register the first admin on loopback 127.0.0.1:${port} first)`)
       }
       const hosts = (sites || []).flatMap((s) => s.hosts || [])
-      if (hosts.length === 0 || (hosts.length === 1 && hosts[0] === 'localhost')) {
+      // After MERGE the self-signed site always carries localhost + every
+      // local IP, so this warning only fires when there genuinely is no
+      // non-loopback host anywhere (no local NICs + nothing configured) —
+      // i.e. the gateway is about to be exposed with no reachable name.
+      const hasNonLoopbackHost = hosts.some((h) => h && h !== 'localhost' && !/^(127\.|::1$)/.test(h))
+      if (!hasNonLoopbackHost) {
         warn(`user-management: listening on port ${port} but no public hostname is configured — add sites[].hosts before exposing it`)
       }
     }

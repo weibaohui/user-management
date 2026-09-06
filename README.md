@@ -47,9 +47,9 @@ v0.4 起，本插件自带 HTTPS 远程访问网关：dsh web 留在 loopback（
 | `enabled` | `true` | 关掉则不启动网关监听器 |
 | `listenHost` | `0.0.0.0` | 网关监听地址；`127.0.0.1` 仅本机可达 |
 | `port` | `19843` | 网关 HTTPS 端口 |
-| `sites[]` | `[]`（=自动） | 站点白名单 + 证书；空 = 自动枚举本机所有 IP，并附带每个 IP 的 `sslip.io` / `nip.io` 通配 DNS 别名 |
-| `sites[].hosts` | — | Host 白名单（域名/IP，支持 `*.example.com` 通配） |
-| `sites[].cert` / `sites[].key` | `''` | PEM 文件路径（fullchain + privkey）；不配则按 hosts 自签 |
+| `sites[]` | `[]`（=自动） | 站点白名单 + 证书；**空 = 自动枚举本机所有 IP**（含 `sslip.io` / `nip.io` 别名）。配了 sites 与自动列表**合并**而非替换：见下方「场景 3」 |
+| `sites[].hosts` | — | Host 白名单（域名/IP，支持 `*.example.com` 通配）。**不带 cert/key 的 site 的 hosts 合并进自签 site**（去重） |
+| `sites[].cert` / `sites[].key` | `''` | PEM 文件路径（fullchain + privkey）；**配了则保留为独立 SNI site**（按域名选证书），不配则按 hosts 自签 |
 | `title` | `DSH 控制台` | 登录页标题 |
 | `sessionDays` / `loginFailLimit` / `lockoutSeconds` / `maxBodyBytes` | `7` / `5` / `60` / `16384` | 预留字段（当前未接线：会话由 store 管、登录失败靠管理员 IP 封禁、body 上限在 API 内） |
 
@@ -72,10 +72,26 @@ user-management:
 - `cert` / `key` 是 PEM 文件路径（fullchain + privkey，如 `certbot certonly -d <域名>` 申请）；配了就加载你的证书，不配则按 hosts 自签。
 - 多域名走多项 `sites`（每项自己的 `hosts` + `cert` + `key`），网关按 SNI 选证书。
 
+### 场景 3：加一个不在本机网卡上的公网 IP（NAT）
+
+服务器有个 NAT 进来的公网 IP（不在本机网卡上，不会被自动枚举到）。配 `sites`（**不配 cert/key**）即可把它**合并**进自签 site——本机 IP / LAN / Tailscale 访问不丢，公网 IP 也进自签证书 SAN：
+
+```yaml
+user-management:
+  listenHost: '0.0.0.0'
+  port: 19843
+  sites:
+    - hosts: ['111.228.30.150']   # NAT 公网 IP，不带 cert/key -> 合并进自签 site
+```
+
+- **合并而非替换**（v0.5.4+）：配的 hosts 加到自动枚举列表里（localhost + 本机所有 IP + sslip/nip 别名 + 你配的 IP），自签证书 SAN 覆盖全部；带 cert/key 的 site 仍保留为独立 SNI site。
+- 早期版本配 `sites` 会**替换**自动列表，本机 IP 全丢 → 本地/LAN/Tailscale 访问被 421。v0.5.4 起改为加法合并。
+- 公网 IP 走自签证书仍有「不受信任 CA」警告（导入信任链后消失）；要真正零警告，给 `<ip>.sslip.io` 等用 Let's Encrypt 签真证书（见「场景 2」写法）。
+
 ### 安全边界
 
 - **零配置下首个访问者即管理员**——仅适用于可信私网（Tailscale 等）；公网暴露前请：配 `sites` 白名单 + 用域名证书 + 先在 loopback（`https://127.0.0.1:19843`）注册首个 admin 再对外。
-- 自签证书 100 年有效，持久化在 `~/.dsh/user-management/certs/`；**改了 hosts/SAN 后删旧证书文件重启才会重签**（否则复用旧证书保指纹稳定）。
+- 自签证书 100 年有效，持久化在 `~/.dsh/user-management/certs/`；**改了 hosts/SAN 后删旧证书文件重启才会重签**（否则复用旧证书保指纹稳定）。合并新增的公网 IP 同理：要让旧自签证书 SAN 补上该 IP，删 `localhost.crt` / `localhost.key` 重启即可重签。
 - dsh web 始终留在 loopback，网关是唯一对外入口——直连 3080 绕不过认证。
 
 ## 安全边界（务必阅读）
