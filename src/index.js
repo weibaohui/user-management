@@ -24,6 +24,15 @@
  * Data lives in `$DSH_HOME/user-management/` (0600, atomic writes) — see
  * src/store.js. Self-signed certs live under `$DSH_HOME/user-management/certs/`.
  *
+ * IDENTITY FOR SIBLING PLUGINS: this plugin provides the cordis service
+ * `user-management` ({ resolveRequest(req), resolveToken(token) }) so any
+ * host-plane plugin can map an incoming request's `um_session` cookie to
+ * `{ id, username, role, ... }` — e.g. to attribute scheduled items, shares
+ * or edits to a user. Consume it with RUNTIME `ctx.inject(['user-management'],
+ * cb)` only (statically injecting an optional service hangs activation);
+ * full examples in the README section 「给其他插件：解析请求的用户身份」 and
+ * on createIdentityService below.
+ *
  * The network-access layer (gateway-core/proxy/certs + hot-reload + self-heal)
  * is adapted from dsh-gateway (clarknu/dsh-gateway); the auth backend is
  * user-management's store (um_session), NOT dsh-gateway's flat HMAC users.
@@ -497,6 +506,71 @@ function emptyUsersGuard() {
   return null
 }
 
+/**
+ * Cordis service `user-management` — lets sibling host-plane plugins resolve
+ * who is behind an incoming request. Extracted as a factory so tests can
+ * exercise it without running the full apply() (which owns the gateway
+ * lifecycle).
+ *
+ * @typedef {Object} UmUser
+ * @property {string} id            stable user id (e.g. `u_3_a1b2c3d4`)
+ * @property {string} username
+ * @property {'admin'|'user'} role
+ * @property {boolean} disabled     always false — disabled users never resolve
+ * @property {number} createdAt     epoch ms
+ * @property {number|null} lastLoginAt
+ *
+ * @example // consumer (any host-plane plugin):
+ *   module.exports = {
+ *     name: 'my-plugin',
+ *     inject: ['webServer'],            // ← do NOT list 'user-management' here;
+ *                                       //   statically injecting an optional
+ *                                       //   service hangs your activation
+ *     apply(ctx) {
+ *       ctx.inject(['user-management'], (scope) => {
+ *         const um = scope['user-management']
+ *         ctx.effect(() => ctx.webServer.register({
+ *           kind: 'prefix', path: '/my-plugin/api',
+ *           handler: async (req, res) => {
+ *             const user = await um.resolveRequest(req)
+ *             if (!user) return sendJson(res, 401, { error: '未登录' })
+ *             if (user.role !== 'admin') return sendJson(res, 403, { error: '需要管理员' })
+ *             // user.username / user.id attribute the action
+ *           },
+ *         }), 'my-plugin: api')
+ *       })
+ *     },
+ *   }
+ *
+ * Both resolvers await the store's async load internally, so the service is
+ * safe to call as soon as it is provided. Unauthenticated / expired sessions
+ * resolve to null; disabled users never resolve (the store drops their
+ * sessions on disable). Browser halves of sibling plugins don't need this
+ * service — they can simply `fetch('/user-management/api/session')`, which
+ * the gateway answers locally with `{ user: {...} | null }`.
+ *
+ * @param {{ store: object, ready: Promise<object> }} opts
+ * @returns {{ resolveRequest(req: object): Promise<UmUser|null>, resolveToken(token: string): Promise<UmUser|null> }}
+ */
+function createIdentityService({ store, ready }) {
+  const withSession = async (token) => {
+    try { await ready } catch { return null } // broken store → nobody resolves
+    const session = await store.resolveSession(token)
+    return session ? store.publicUser(session.user) : null
+  }
+  return {
+    /** Resolve the browser request's `um_session` cookie to its user. */
+    async resolveRequest(req) {
+      const cookies = parseCookies(req.headers && req.headers.cookie)
+      return withSession(cookies[SESSION_COOKIE])
+    },
+    /** Lower-level variant for callers that already extracted the token. */
+    async resolveToken(token) {
+      return withSession(token)
+    },
+  }
+}
+
 const plugin = {
   name: 'user-management',
   inject: ['webServer'],
@@ -515,6 +589,7 @@ const plugin = {
     emptyUsersGuard,
     allLocalIPs,
     autoSiteHosts,
+    createIdentityService,
     resolveSites,
   },
   apply(ctx, config = {}) {
@@ -526,6 +601,10 @@ const plugin = {
     })
     const clientIp = (req) => normalizeIp(req.socket && req.socket.remoteAddress)
     const deps = { store, clientIp }
+
+    // Identity service for sibling plugins (see createIdentityService).
+    ctx.provide('user-management', createIdentityService({ store, ready }))
+
 
     const dataDir = join(dshHome(), 'user-management')
     const certsDir = join(dataDir, 'certs')
