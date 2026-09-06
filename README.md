@@ -38,24 +38,49 @@ dsh plugin --profile web add @weibaohui/user-management -w
 
 ## 给其他插件：解析请求的用户身份
 
-user-management 向宿主提供 cordis 服务 `user-management`，兄弟插件可以据此知道自己收到的请求是"谁"：
+user-management 向宿主提供 cordis 服务 `user-management`，兄弟插件据此知道自己收到的请求是"谁"（归属定时任务/分享/编辑记录等场景）。
+
+### 消费方式（host 半）
 
 ```js
-// 你的插件 client 或 host 侧 —— 注意不要把 'user-management' 写进静态
-// inject 数组（未安装时会让你的插件卡死激活），用运行时 inject：
-ctx.inject(['user-management'], (scope) => {
-  const um = scope['user-management']
-  // 在你注册的 webServer 路由 handler 里：
-  const user = await um.resolveRequest(req)
-  // → { id, username, role, createdAt, lastLoginAt } | null（未登录/会话过期）
-})
+// ⚠️ 不要把 'user-management' 写进静态 inject 数组 —— user-management 未安装时
+// 你的插件会卡死激活。用运行时 inject，装了才有、没装就跳过：
+module.exports = {
+  name: 'my-plugin',
+  inject: ['webServer'],
+  apply(ctx) {
+    ctx.inject(['user-management'], (scope) => {
+      const um = scope['user-management']
+      ctx.effect(() => ctx.webServer.register({
+        kind: 'prefix', path: '/my-plugin/api',
+        handler: async (req, res) => {
+          const user = await um.resolveRequest(req)   // 解析请求 cookie
+          if (!user) return sendJson(res, 401, { error: '未登录' })
+          if (user.role !== 'admin') return sendJson(res, 403, { error: '需要管理员' })
+          // user.username / user.id 可用于操作归属
+        },
+      }), 'my-plugin: api')
+    })
+  },
+}
 ```
 
-- `resolveRequest(req)`：从请求的 `um_session` cookie 解析当前用户（推荐）
-- `resolveToken(token)`：已自行取出 token 时的底层变体
-- 未登录、会话过期、被禁用的用户一律解析为 `null`；用户被禁用/删除后其会话即刻失效
+### API
 
-边界提醒：这只回答"这个请求是谁发的"，**不构成数据隔离**——dsh 宿主的会话与工作区仍是全实例共享。
+| 方法 | 说明 |
+|---|---|
+| `resolveRequest(req)` | 从请求的 `um_session` cookie 解析当前用户（推荐入口） |
+| `resolveToken(token)` | 已自行取出 token 时的底层变体 |
+
+返回 `UmUser`：`{ id, username, role: 'admin'|'user', disabled, createdAt, lastLoginAt }`；以下情况一律返回 **`null`**：未登录、会话过期/伪造、用户被禁用或删除（禁用/删除即刻失效）、user-management 自身存储故障（不向消费方抛错）。服务一 provide 即可安全调用（内部等待存储就绪）。
+
+### 浏览器端（client 半）不需要这个服务
+
+页面里直接 `fetch('/user-management/api/session')` 即可，网关本地应答 `{ user: {...} | null }`（HttpOnly cookie 自动携带）。
+
+### 边界
+
+这只回答"这个请求是谁发的"，**不构成数据隔离**——dsh 宿主的会话与工作区仍是全实例共享。另外身份可信的前提是 dsh web 只监听 loopback（本插件网关架构的默认要求）：一旦有人绕过网关直连宿主端口，cookie 校验仍由 store 把关，但请保持宿主不对外暴露。
 
 ## Remote Gateway 配置
 
