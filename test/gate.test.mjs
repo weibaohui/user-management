@@ -144,6 +144,14 @@ test('gateway-core: Host allow-list, login flow, unauth 302/401, proxy passthrou
     const denied = await fetch(`${base}/api/foo`, { headers: { accept: 'application/json' } })
     assert.equal(denied.status, 401)
 
+    // /plugins/* (dsh web SPA client-plugin bundles) are public — the SPA's
+    // client-modules loader fetches them WITHOUT the session cookie
+    // (crossorigin), so the auth gate must not 401 them. Proxied to the
+    // loopback upstream anonymously (regression: "Failed to load plugins").
+    const pluginBundle = await fetch(`${base}/plugins/@deepseek-ai/dsh-client-ui-workflow-run/client.js`)
+    assert.equal(pluginBundle.status, 200)
+    assert.equal(await pluginBundle.text(), 'inner:/plugins/@deepseek-ai/dsh-client-ui-workflow-run/client.js')
+
     // register the first admin → session cookie
     const reg = await fetch(`${base}/user-management/api/register`, {
       method: 'POST',

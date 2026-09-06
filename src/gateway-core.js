@@ -236,8 +236,17 @@ function createGateway(options) {
       return
     }
 
-    // Everything else (the SPA, dsh /api, /plugins, static) is proxied to
-    // the loopback dsh webserver — but only past the auth gate.
+    // /plugins/* — dsh web SPA client-plugin bundles. The SPA's client-modules
+    // loader fetches these WITHOUT the session cookie (crossorigin), so the
+    // auth gate (401 anonymous) breaks plugin loading ("Failed to load
+    // plugins"). They are static SPA assets (no secrets) — proxy publicly to
+    // the loopback dsh web. IP bans already enforced above (the decider ran).
+    if (path.startsWith('/plugins/')) {
+      return proxy.handleRequest(req, res)
+    }
+
+    // Everything else (the SPA, dsh /api, static) is proxied to the loopback
+    // dsh webserver — but only past the auth gate.
     if (decision.action === 'allow') {
       wireAudit(req, res, decision.session, path)
       return proxy.handleRequest(req, res)
