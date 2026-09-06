@@ -36,6 +36,27 @@ dsh plugin --profile web add @weibaohui/user-management -w
 6. 数据与审计文件都在 `~/.dsh/user-management/`（`users.json` / `sessions.json` / `activity.jsonl` / `audit.jsonl` / `bans.json`，0600 权限，原子写；审计账本滚动保留最近 5000 条）
 7. **IP 封禁按连接源地址（`remoteAddress`）判定**：本插件自带的网关不做代理改写，看到的即是客户端真实地址；若你在网关前面另加反代层，看到的将是反代的 IP
 
+## 给其他插件：解析请求的用户身份
+
+user-management 向宿主提供 cordis 服务 `user-management`，兄弟插件可以据此知道自己收到的请求是"谁"：
+
+```js
+// 你的插件 client 或 host 侧 —— 注意不要把 'user-management' 写进静态
+// inject 数组（未安装时会让你的插件卡死激活），用运行时 inject：
+ctx.inject(['user-management'], (scope) => {
+  const um = scope['user-management']
+  // 在你注册的 webServer 路由 handler 里：
+  const user = await um.resolveRequest(req)
+  // → { id, username, role, createdAt, lastLoginAt } | null（未登录/会话过期）
+})
+```
+
+- `resolveRequest(req)`：从请求的 `um_session` cookie 解析当前用户（推荐）
+- `resolveToken(token)`：已自行取出 token 时的底层变体
+- 未登录、会话过期、被禁用的用户一律解析为 `null`；用户被禁用/删除后其会话即刻失效
+
+边界提醒：这只回答"这个请求是谁发的"，**不构成数据隔离**——dsh 宿主的会话与工作区仍是全实例共享。
+
 ## Remote Gateway 配置
 
 v0.4 起，本插件自带 HTTPS 远程访问网关：dsh web 留在 loopback（`127.0.0.1:3080`），网关（独立 `node:https` 监听器）反代到它——**网关是唯一对外入口，认证不可绕过**。配置走 `~/.dsh/settings.yaml` 的 `user-management:` 段（也支持设置页热生效）。

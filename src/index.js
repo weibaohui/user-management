@@ -497,6 +497,44 @@ function emptyUsersGuard() {
   return null
 }
 
+/**
+ * Cordis service `user-management` — lets sibling host-plane plugins resolve
+ * who is behind an incoming request. Extracted as a factory so tests can
+ * exercise it without running the full apply() (which owns the gateway
+ * lifecycle). Consumers should NOT list 'user-management' in their static
+ * `inject` array (a missing service would hang their activation); fetch it
+ * at runtime instead:
+ *
+ *   ctx.inject(['user-management'], (scope) => {
+ *     const um = scope['user-management']
+ *     // inside your webServer route handler:
+ *     const user = await um.resolveRequest(req) // {id, username, role, ...} | null
+ *   })
+ *
+ * Both resolvers await the store's async load internally, so the service is
+ * safe to call as soon as it is provided. Unauthenticated / expired sessions
+ * resolve to null; disabled users never resolve (the store drops their
+ * sessions on disable).
+ */
+function createIdentityService({ store, ready }) {
+  const withSession = async (token) => {
+    try { await ready } catch { return null } // broken store → nobody resolves
+    const session = await store.resolveSession(token)
+    return session ? store.publicUser(session.user) : null
+  }
+  return {
+    /** Resolve the browser request's `um_session` cookie to its user. */
+    async resolveRequest(req) {
+      const cookies = parseCookies(req.headers && req.headers.cookie)
+      return withSession(cookies[SESSION_COOKIE])
+    },
+    /** Lower-level variant for callers that already extracted the token. */
+    async resolveToken(token) {
+      return withSession(token)
+    },
+  }
+}
+
 const plugin = {
   name: 'user-management',
   inject: ['webServer'],
@@ -515,6 +553,7 @@ const plugin = {
     emptyUsersGuard,
     allLocalIPs,
     autoSiteHosts,
+    createIdentityService,
     resolveSites,
   },
   apply(ctx, config = {}) {
@@ -526,6 +565,10 @@ const plugin = {
     })
     const clientIp = (req) => normalizeIp(req.socket && req.socket.remoteAddress)
     const deps = { store, clientIp }
+
+    // Identity service for sibling plugins (see createIdentityService).
+    ctx.provide('user-management', createIdentityService({ store, ready }))
+
 
     const dataDir = join(dshHome(), 'user-management')
     const certsDir = join(dataDir, 'certs')
