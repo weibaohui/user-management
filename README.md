@@ -7,9 +7,11 @@
 
 ![demo](docs/demo.gif)
 
-**两步验证演示**（登录动态码 + 扫码绑定）：
+**两步验证演示**（登录动态码 + 扫码绑定，亮色 / 暗色）：
 
-![totp-demo](docs/demo-totp.gif)
+| 亮色主题 | 暗色主题 |
+|---|---|
+| ![totp-light](docs/demo-totp-light.gif) | ![totp-dark](docs/demo-totp-dark.gif) |
 
 ## 核心功能
 
