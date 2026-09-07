@@ -79,6 +79,7 @@ function createProxy(upstream, getLaunchToken) {
     headers['x-forwarded-for'] = prior ? `${prior}, ${peer}` : peer
     headers['x-forwarded-proto'] = 'https'
     headers['x-forwarded-host'] = req.headers.host || ''
+    if (dshCookie) headers.cookie = dshCookie  // patched: all paths carry BrowserAuth cookie
     return headers
   }
 
@@ -213,6 +214,7 @@ function createProxy(upstream, getLaunchToken) {
       },
       (upstreamRes) => {
         const outHeaders = stripHop(upstreamRes.headers)
+        delete outHeaders['set-cookie']
         if (outHeaders.location !== undefined) rewriteLocation(outHeaders, req.headers.host || '')
         res.writeHead(upstreamRes.statusCode || 502, outHeaders)
         if (req.method === 'HEAD' || upstreamRes.statusCode === 204 || upstreamRes.statusCode === 304) {
@@ -236,7 +238,8 @@ function createProxy(upstream, getLaunchToken) {
   }
 
   /** Route index paths through the auth-injecting handler, everything else plain. */
-  function handleRequest(req, res) {
+  async function handleRequest(req, res) {
+    await ensureDshCookie()
     if (isIndexPath(req.url)) {
       handleIndexRequest(req, res)
       return

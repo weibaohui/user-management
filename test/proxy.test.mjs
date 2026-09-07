@@ -91,12 +91,12 @@ test('index request mints a cookie from launchToken and serves 200 index', async
   proxy.close()
 })
 
-test('non-index path proxies plain — no token gate, no cookie minted', async () => {
+test('non-index path proxies plain — cookie minted + injected (fix for /api/ 401 on dsh 0.1.2-rc.1)', async () => {
   const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, () => 'LAUNCH')
   const res = await get(proxy, '/api/foo')
   assert.equal(res.status, 200)
   assert.equal(res.body, 'api')
-  assert.equal(proxy.getDshCookie(), null, 'no cookie minted for non-index paths')
+  assert.ok(proxy.getDshCookie(), 'cookie minted for non-index paths too — fixes /api/ 401')
   proxy.close()
 })
 
