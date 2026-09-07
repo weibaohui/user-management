@@ -631,8 +631,11 @@ const plugin = {
     // proxy falls through to a plain passthrough — backward compatible.
     let launchToken = null
     if (typeof ctx.inject === 'function') {
-      ctx.inject(['connection'], (conn) => {
+      ctx.inject(['connection'], (fiber) => {
         try {
+          // ctx.inject delivers a fiber whose `.connection` is the registered
+          // HostConnectionService (cf. the existing settings inject: scope.settings).
+          const conn = (fiber && fiber.connection) || fiber
           launchToken = (conn && conn.browserAuth && conn.browserAuth.launchToken) || null
         } catch { launchToken = null }
       })
