@@ -19,6 +19,7 @@ const net = require('node:net')
 const { randomBytes, scrypt: scryptCb, timingSafeEqual, createHash } = require('node:crypto')
 const { promisify } = require('node:util')
 const { join } = require('node:path')
+const { generateSecret, verifyTotp } = require('./totp')
 
 const scrypt = promisify(scryptCb)
 
@@ -200,6 +201,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     return {
       id: user.id, username: user.username, role: user.role,
       disabled: !!user.disabled,
+      totpEnabled: !!user.totpSecret,
       createdAt: user.createdAt, lastLoginAt: user.lastLoginAt || null,
     }
   }
@@ -290,6 +292,61 @@ function createStore({ home, now = () => Date.now() } = {}) {
     }
     user.role = role
     await persistUsers()
+  }
+
+  // ── TOTP two-step verification ───────────────────────────────────────────
+  //
+  // Enrollment is two-phase so a typo in the secret can never lock the user
+  // out: startTotpSetup parks the fresh secret in totpPendingSecret, and only
+  // activateTotp — which demands a code the authenticator generated FROM that
+  // secret — promotes it to totpSecret (the enabled flag is `totpSecret`
+  // itself). verifyLoginOtp enforces single use by persisting the matched
+  // step counter; older/equal counters are rejected as replays.
+
+  /** Generate a pending secret; the API layer builds the otpauth URI + QR. */
+  async function startTotpSetup(user) {
+    if (user.totpSecret) throw new StoreError('totp_enabled', '两步验证已开启，请先关闭再重新绑定')
+    user.totpPendingSecret = generateSecret()
+    await persistUsers()
+    return { secret: user.totpPendingSecret }
+  }
+
+  /** Promote the pending secret to enabled after the user proves possession. */
+  async function activateTotp(user, code) {
+    if (!user.totpPendingSecret) throw new StoreError('no_pending_totp', '请先开始两步验证绑定')
+    const verdict = verifyTotp(user.totpPendingSecret, code, { nowMs: now() })
+    if (!verdict.ok) return false
+    user.totpSecret = user.totpPendingSecret
+    user.totpLastCounter = verdict.counter
+    user.totpEnabledAt = now()
+    delete user.totpPendingSecret
+    await persistUsers()
+    return true
+  }
+
+  /** Drop every TOTP field (self-service disable and admin reset share this). */
+  async function disableTotp(user) {
+    if (!user.totpSecret) throw new StoreError('totp_not_enabled', '该账号未开启两步验证')
+    delete user.totpSecret
+    delete user.totpPendingSecret
+    delete user.totpLastCounter
+    delete user.totpEnabledAt
+    await persistUsers()
+  }
+
+  /**
+   * Login-time OTP check. `notEnabled` lets the caller skip the OTP branch
+   * entirely; a successful check persists the matched counter so the same
+   * code can never be accepted twice.
+   */
+  async function verifyLoginOtp(user, code) {
+    if (!user.totpSecret) return { ok: false, notEnabled: true }
+    const verdict = verifyTotp(user.totpSecret, code, { nowMs: now(), lastCounter: user.totpLastCounter || 0 })
+    if (verdict.ok) {
+      user.totpLastCounter = verdict.counter
+      await persistUsers()
+    }
+    return verdict
   }
 
   async function removeUser(user) {
@@ -558,6 +615,8 @@ function createStore({ home, now = () => Date.now() } = {}) {
     // users
     createUser, verifyLogin, checkLogin, setPassword, setRole, setDisabled, removeUser, touchLogin,
     listUsers, findUser, findUserByUsername, countAdmins, roleForNextRegistration, publicUser,
+    // totp
+    startTotpSetup, activateTotp, disableTotp, verifyLoginOtp,
     // sessions
     createSession, resolveSession, dropSession, dropUserSessions, pruneSessions,
     // ip bans

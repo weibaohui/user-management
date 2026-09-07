@@ -64,7 +64,7 @@ test('resolveRequest maps a live session cookie to the public user', async () =>
   const resolved = await service.resolveRequest({ headers: { cookie: `um_session=${token}; other=x` } })
   assert.equal(resolved.username, 'alice')
   assert.equal(resolved.id, alice.id)
-  assert.deepEqual(Object.keys(resolved).sort(), ['createdAt', 'disabled', 'id', 'lastLoginAt', 'role', 'username'], 'no hash material')
+  assert.deepEqual(Object.keys(resolved).sort(), ['createdAt', 'disabled', 'id', 'lastLoginAt', 'role', 'totpEnabled', 'username'], 'no hash material, no totp secret')
 })
 
 test('resolveRequest returns null for anonymous / forged / malformed cookies', async () => {

@@ -10,6 +10,10 @@
  * - Standalone /login page (login + register tabs; first registrant becomes
  *   admin). Unauthenticated page navigations redirect to /login, API/WS
  *   traffic is answered 401.
+ * - Optional TOTP two-step verification (RFC 6238): self-service enrollment
+ *   with QR + manual entry, OTP demanded after a correct password at login,
+ *   brute-force lockout, single-use replay guard, and an admin recovery
+ *   reset. See src/totp.js and the /me/totp/* + /users/:id/reset-totp APIs.
  * - JSON API under /user-management/api: sessions, self service, admin user
  *   management (list / delete / reset password / role / disable), IP bans,
  *   and the activity + audit ledgers.
@@ -50,6 +54,8 @@ const {
   StoreError,
   ACTIVITY_LIMIT_DEFAULT,
 } = require('./store')
+const { otpauthUri } = require('./totp')
+const qrCodeFactory = require('./vendor/qrcode-generator')
 const {
   SESSION_COOKIE,
   API_PREFIX,
@@ -63,9 +69,54 @@ const { createGateway } = require('./gateway-core')
 const MAX_BODY_BYTES = 64 * 1024
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 /** Ledger types a plain user may read about themselves. */
-const SELF_ACTIVITY_TYPES = ['login', 'login_failed', 'logout', 'password_change']
-const ADMIN_ACTIVITY_TYPES = ['login', 'login_failed', 'logout', 'password_change', 'register', 'reset_password', 'role_change', 'delete_user', 'access']
+const SELF_ACTIVITY_TYPES = ['login', 'login_failed', 'logout', 'password_change', 'totp_enabled', 'totp_disabled']
+const ADMIN_ACTIVITY_TYPES = ['login', 'login_failed', 'logout', 'password_change', 'register', 'reset_password', 'role_change', 'delete_user', 'access', 'totp_enabled', 'totp_disabled', 'totp_reset']
 const AUDIT_LIMIT_DEFAULT = 200
+/** TOTP brute-force guard: lock an account's OTP check after this many
+ *  consecutive bad codes (the code space is only 10^6, so without this an
+ *  attacker holding the password could grind the 3-valid-codes-per-30s
+ *  window indefinitely). In-memory only — a restart clears it. */
+const OTP_FAIL_LIMIT = 5
+const OTP_LOCKOUT_MS = 60 * 1000
+
+/**
+ * Per-username lockout after consecutive TOTP failures. Deliberately simple:
+ * `fail()` counts, and reaching the limit locks for `lockoutMs` (during which
+ * even a correct code is rejected — pacing attacks defeat count-only guards).
+ */
+function createOtpGuard({ limit = OTP_FAIL_LIMIT, lockoutMs = OTP_LOCKOUT_MS, now = () => Date.now() } = {}) {
+  const state = new Map() // username(lowercased) → { fails, lockedUntil }
+  const keyOf = (username) => String(username || '').toLowerCase()
+  return {
+    fail(username) {
+      const key = keyOf(username)
+      const rec = state.get(key) || { fails: 0, lockedUntil: 0 }
+      rec.fails += 1
+      if (rec.fails >= limit) {
+        rec.lockedUntil = now() + lockoutMs
+        rec.fails = 0
+      }
+      state.set(key, rec)
+    },
+    /** Remaining lockout in ms; 0 = not locked. */
+    locked(username) {
+      const rec = state.get(keyOf(username))
+      if (!rec) return 0
+      return Math.max(0, rec.lockedUntil - now())
+    },
+    reset(username) {
+      state.delete(keyOf(username))
+    },
+  }
+}
+
+/** Self-contained QR SVG for the enrollment URI (white ground, scannable). */
+function totpQrSvg(uri) {
+  const qr = qrCodeFactory(0, 'M')
+  qr.addData(uri)
+  qr.make()
+  return qr.createSvgTag({ cellSize: 5, margin: 2 })
+}
 
 function sendJson(res, status, payload, extraHeaders) {
   res.writeHead(status, Object.assign({ 'content-type': 'application/json; charset=utf-8' }, extraHeaders || {}))
@@ -155,6 +206,29 @@ async function handleApi(req, res, deps) {
       return sendJson(res, 403, { error: '账号已被禁用，请联系管理员' })
     }
     const user = outcome.user
+    // TOTP step — only revealed AFTER the password is correct (otpRequired in
+    // the response tells the login page to show the code field; a missing or
+    // wrong code never discloses whether the account has TOTP to a caller who
+    // doesn't hold valid credentials).
+    if (user.totpSecret) {
+      const guard = deps.otpGuard || (deps.otpGuard = createOtpGuard())
+      const lockedFor = guard.locked(username)
+      if (lockedFor > 0) {
+        await store.appendActivity({ type: 'login_failed', username, userId: user.id, ip: deps.clientIp(req), detail: 'totp attempts locked' })
+        return sendJson(res, 429, { error: `两步验证失败次数过多，请 ${Math.ceil(lockedFor / 1000)} 秒后再试`, otpRequired: true })
+      }
+      const code = typeof body.otp === 'string' ? body.otp.trim() : ''
+      if (code === '') {
+        return sendJson(res, 401, { error: '请输入两步验证码', otpRequired: true })
+      }
+      const verdict = await store.verifyLoginOtp(user, code)
+      if (!verdict.ok) {
+        guard.fail(username)
+        await store.appendActivity({ type: 'login_failed', username, userId: user.id, ip: deps.clientIp(req), detail: 'invalid totp' })
+        return sendJson(res, 401, { error: '两步验证码错误', otpRequired: true })
+      }
+      guard.reset(username)
+    }
     const { token } = await store.createSession(user)
     await store.touchLogin(user)
     await store.appendActivity({ type: 'login', username: user.username, userId: user.id, ip: deps.clientIp(req) })
@@ -208,6 +282,59 @@ async function handleApi(req, res, deps) {
     }
     await store.dropUserSessions(session.user.id, session.token)
     await store.appendActivity({ type: 'password_change', username: session.user.username, userId: session.user.id, ip: deps.clientIp(req) })
+    return sendJson(res, 200, { ok: true })
+  }
+
+  // ── TOTP self-service enrollment ─────────────────────────────────────────
+
+  // Step 1: mint the (pending) secret. The QR + otpauth URI are generated
+  // here so the browser half stays bundle-light.
+  if (apiPath === '/me/totp/setup' && method === 'POST') {
+    const session = await authed()
+    if (!session) return sendJson(res, 401, { error: '未登录' })
+    try {
+      const { secret } = await store.startTotpSetup(session.user)
+      const uri = otpauthUri({ username: session.user.username, secret })
+      return sendJson(res, 200, { secret, otpauth: uri, qrSvg: totpQrSvg(uri) })
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, 409, { error: error.message })
+      throw error
+    }
+  }
+
+  // Step 2: prove possession of the secret with a live code.
+  if (apiPath === '/me/totp/activate' && method === 'POST') {
+    const session = await authed()
+    if (!session) return sendJson(res, 401, { error: '未登录' })
+    const body = await readJsonBody(req)
+    let activated = false
+    try {
+      activated = await store.activateTotp(session.user, body.code)
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, 409, { error: error.message })
+      throw error
+    }
+    if (!activated) return sendJson(res, 400, { error: '动态码不正确，请确认验证器时间已同步后重试' })
+    await store.appendActivity({ type: 'totp_enabled', username: session.user.username, userId: session.user.id, ip: deps.clientIp(req) })
+    return sendJson(res, 200, { ok: true })
+  }
+
+  // Disable: identity re-confirmed by password (a stolen session alone must
+  // not be able to weaken the account). Existing sessions are kept — they
+  // already passed the full login.
+  if (apiPath === '/me/totp/disable' && method === 'POST') {
+    const session = await authed()
+    if (!session) return sendJson(res, 401, { error: '未登录' })
+    const body = await readJsonBody(req)
+    const ok = await store.verifyLogin(session.user.username, body.password)
+    if (!ok) return sendJson(res, 400, { error: '登录密码不正确' })
+    try {
+      await store.disableTotp(session.user)
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, 409, { error: error.message })
+      throw error
+    }
+    await store.appendActivity({ type: 'totp_disabled', username: session.user.username, userId: session.user.id, ip: deps.clientIp(req) })
     return sendJson(res, 200, { ok: true })
   }
 
@@ -349,7 +476,7 @@ async function handleApi(req, res, deps) {
     return sendJson(res, 200, { user: store.publicUser(target) })
   }
 
-  const adminMatch = /^\/users\/([A-Za-z0-9_-]+)(?:\/(reset-password|role))?$/.exec(apiPath)
+  const adminMatch = /^\/users\/([A-Za-z0-9_-]+)(?:\/(reset-password|reset-totp|role))?$/.exec(apiPath)
 
   if (adminMatch && method === 'DELETE' && !adminMatch[2]) {
     const admin = await requireAdmin()
@@ -377,6 +504,25 @@ async function handleApi(req, res, deps) {
     await store.dropUserSessions(target.id)
     await store.appendActivity({ type: 'reset_password', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `target=${target.username}` })
     return sendJson(res, 200, { tempPassword: generated })
+  }
+
+  // Admin recovery path for a lost authenticator device: strip the target's
+  // TOTP so they can sign in with the password alone (and re-enroll). Does
+  // not touch their live sessions — this weakens FUTURE logins only, and the
+  // action itself lands in the activity ledger.
+  if (adminMatch && adminMatch[2] === 'reset-totp' && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    const target = store.findUser(adminMatch[1])
+    if (!target) return sendJson(res, 404, { error: '用户不存在' })
+    try {
+      await store.disableTotp(target)
+    } catch (error) {
+      if (error instanceof StoreError) return sendJson(res, 409, { error: error.message })
+      throw error
+    }
+    await store.appendActivity({ type: 'totp_reset', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `target=${target.username}` })
+    return sendJson(res, 200, { user: store.publicUser(target) })
   }
 
   if (adminMatch && adminMatch[2] === 'role' && method === 'POST') {
@@ -591,6 +737,8 @@ const plugin = {
     autoSiteHosts,
     createIdentityService,
     resolveSites,
+    createOtpGuard,
+    totpQrSvg,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'

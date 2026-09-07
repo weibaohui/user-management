@@ -190,6 +190,37 @@ test('the HTTPS certificate lives in its own tab, right after IP bans', () => {
     for (const kid of node.kids || []) walk(kid)
   }
   walk(el)
-  assert.deepEqual(labels, ['tabUsers', 'tabLoginLog', 'tabAccessLog', 'tabAuditLog', 'tabBans', 'certTitle'],
-    'cert tab sits last, right after the bans tab')
+  assert.deepEqual(labels, ['tabUsers', 'tabLoginLog', 'tabAccessLog', 'tabAuditLog', 'tabBans', 'certTitle', 'totpTitle'],
+    'cert tab before bans; totp (self-service) sits last')
+})
+
+test('totp card renders both states; dialogs render their inputs', () => {
+  const { TotpCard, TotpSetupDialog, TotpDisableDialog } = plugin.__internals
+  const textsOf = (el) => {
+    const out = []
+    const walk = (node) => {
+      if (!node || typeof node !== 'object') return
+      if (typeof node.type === 'string' && node.props && node.props.onClick && node.kids && typeof node.kids[0] === 'string') out.push(node.kids[0])
+      for (const kid of node.kids || []) walk(kid)
+    }
+    walk(el)
+    return out
+  }
+  const off = TotpCard({ me: { totpEnabled: false }, __t: (k) => k, flash: () => {} })
+  assert.ok(textsOf(off).includes('totpEnableAction'), 'off state offers enrollment')
+  assert.ok(!textsOf(off).includes('totpDisableAction'), 'off state has no disable button')
+  const on = TotpCard({ me: { totpEnabled: true }, __t: (k) => k, flash: () => {} })
+  assert.ok(textsOf(on).includes('totpDisableAction'), 'on state offers disable')
+
+  const setup = TotpSetupDialog({ onClose: () => {}, onEnabled: () => {}, __t: (k) => k })
+  assert.ok(setup, 'setup dialog renders (loading shell while /setup is in flight)')
+  const disable = TotpDisableDialog({ onClose: () => {}, onDisabled: () => {}, __t: (k) => k })
+  const pwInputs = []
+  const walkPw = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (node.type === 'input' && node.props.type === 'password') pwInputs.push(node)
+    for (const kid of node.kids || []) walkPw(kid)
+  }
+  walkPw(disable)
+  assert.equal(pwInputs.length, 1, 'disable demands the login password')
 })

@@ -127,7 +127,7 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
   const userView = await call('/users', { cookie: userCookie })
   assert.deepEqual(userView.data.users.map((u) => u.username), ['alice'])
   // no hash material ever leaks
-  assert.deepEqual(Object.keys(userView.data.users[0]).sort(), ['createdAt', 'disabled', 'id', 'lastLoginAt', 'role', 'username'])
+  assert.deepEqual(Object.keys(userView.data.users[0]).sort(), ['createdAt', 'disabled', 'id', 'lastLoginAt', 'role', 'totpEnabled', 'username'])
 
   // ── admin actions are admin-only ──
   assert.equal((await call(`/users/${alice.id}/reset-password`, { method: 'POST', cookie: userCookie })).status, 403)
