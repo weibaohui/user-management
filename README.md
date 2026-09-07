@@ -7,6 +7,10 @@
 
 ![demo](docs/demo.gif)
 
+**两步验证演示**（登录动态码 + 扫码绑定）：
+
+![totp-demo](docs/demo-totp.gif)
+
 ## 核心功能
 
 - **HTTPS 登录网关**：独立 `node:https` 监听器（默认端口 19843）反代 loopback 的 dsh web——所有请求先过会话校验，未登录的页面访问 302 跳 `/login`，API 请求、WebSocket 升级一律 401。登录页为插件自带的独立页面（登录 / 注册双 Tab），不依赖宿主前端，深浅色自适应
