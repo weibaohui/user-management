@@ -13,6 +13,14 @@
  * rewritten to the upstream loopback authority so the dsh `/api` browser-trust
  * fence (which accepts loopback hosts and requires Origin.host === Host.host)
  * passes for proxied traffic.
+ *
+ * dsh 0.1.2-rc.1+ note: dsh-client-connection now gates the `/` index.html
+ * behind a launchToken + authority-bound signed cookie (BrowserAuth). The
+ * gateway already authenticates the human at its own layer, so for index
+ * requests we mint a loopback browser cookie from the dsh launchToken
+ * (obtained via the injected `connection` service) and inject it upstream,
+ * letting authorizeIndex pass. On 0.1.1-rc.2 (no BrowserAuth) getLaunchToken
+ * yields null and we fall through to a plain proxy — fully backward compatible.
  */
 
 const http = require('node:http')
@@ -31,8 +39,11 @@ const HOP_BY_HOP = new Set([
   'upgrade',
 ])
 
+/** Query key dsh-client-connection's authorizeIndex honours for the token exchange. */
+const TOKEN_QUERY = 'token'
+
 /** Create a proxy target from an http upstream URL string. */
-function createProxy(upstream) {
+function createProxy(upstream, getLaunchToken) {
   const target = new URL(upstream)
   if (target.protocol !== 'http:') {
     throw new Error(`user-management: upstream must be plain http (loopback), got ${target.protocol}`)
@@ -44,6 +55,11 @@ function createProxy(upstream) {
   const upstreamAuthority = port === 80 ? host : `${host}:${port}`
   /** Origin header we present upstream, matching the rewritten Host. */
   const upstreamOrigin = `http://${upstreamAuthority}`
+
+  // dsh-client-connection browser-session cookie for upstreamAuthority.
+  // Minted once from the launchToken, reused across index requests, refreshed
+  // when the upstream answers 401 (cookie expired / dsh restarted with a new token).
+  let dshCookie = null
 
   const forwardHeaders = (req) => {
     const headers = {}
@@ -84,8 +100,108 @@ function createProxy(upstream) {
     return headers
   }
 
-  /** Proxy one plain HTTP request. */
-  function handleRequest(req, res) {
+  /** Mint a loopback browser cookie from the dsh launchToken via the token exchange. */
+  const refreshDshCookie = () =>
+    new Promise((resolve) => {
+      const token = typeof getLaunchToken === 'function' ? getLaunchToken() : null
+      if (!token) {
+        resolve(false)
+        return
+      }
+      const authReq = http.request(
+        {
+          host,
+          port,
+          method: 'GET',
+          path: `/?${TOKEN_QUERY}=${encodeURIComponent(token)}`,
+          headers: { host: upstreamAuthority, origin: upstreamOrigin },
+          agent,
+        },
+        (authRes) => {
+          // authorizeIndex answers 303 + Set-Cookie on a valid token; either way
+          // we only care about the cookie header the upstream stamped in.
+          const setCookie = authRes.headers['set-cookie']
+          if (Array.isArray(setCookie) && setCookie.length) {
+            dshCookie = setCookie
+              .map((c) => c.split(';')[0].trim())
+              .filter(Boolean)
+              .join('; ')
+          }
+          authRes.resume()
+          resolve(!!dshCookie)
+        },
+      )
+      authReq.on('error', () => resolve(false))
+      authReq.end()
+    })
+
+  const ensureDshCookie = async () => {
+    if (dshCookie) return true
+    return refreshDshCookie()
+  }
+
+  const isIndexPath = (rawUrl) => {
+    const url = rawUrl || ''
+    const i = url.indexOf('?')
+    const path = i === -1 ? url : url.slice(0, i)
+    return path === '/' || path === '/index.html'
+  }
+
+  /**
+   * Serve an index (`/` or `/index.html`) request: inject the minted dsh
+   * browser cookie so authorizeIndex passes, then stream the upstream response
+   * back. Refreshes the cookie once on 401 and retries, then gives up (serves
+   * the 401 through) so a stuck token never loops.
+   */
+  async function handleIndexRequest(req, res, attempts) {
+    attempts = attempts || 0
+    await ensureDshCookie()
+    const headers = forwardHeaders(req)
+    if (dshCookie) headers.cookie = dshCookie
+    const upstreamReq = http.request(
+      {
+        host,
+        port,
+        method: req.method,
+        path: req.url,
+        headers,
+        agent,
+      },
+      (upstreamRes) => {
+        if (upstreamRes.statusCode === 401 && dshCookie && attempts < 1) {
+          upstreamRes.resume()
+          dshCookie = null
+          refreshDshCookie().then(() => handleIndexRequest(req, res, attempts + 1))
+          return
+        }
+        const outHeaders = stripHop(upstreamRes.headers)
+        // The cookie dsh stamps is authority-bound to the loopback upstream and
+        // must not leak to the public browser (wrong domain, never storable).
+        delete outHeaders['set-cookie']
+        if (outHeaders.location !== undefined) rewriteLocation(outHeaders, req.headers.host || '')
+        res.writeHead(upstreamRes.statusCode || 502, outHeaders)
+        if (req.method === 'HEAD' || upstreamRes.statusCode === 204 || upstreamRes.statusCode === 304) {
+          upstreamRes.resume()
+          res.end()
+        } else {
+          upstreamRes.pipe(res)
+        }
+      },
+    )
+    upstreamReq.on('error', (err) => {
+      if (res.headersSent) {
+        res.destroy()
+        return
+      }
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end(`user-management: upstream unreachable (${err.code || err.message})`)
+    })
+    req.on('error', () => upstreamReq.destroy())
+    req.pipe(upstreamReq)
+  }
+
+  /** Proxy one plain HTTP request (non-index paths). */
+  function proxyPlain(req, res) {
     const upstreamReq = http.request(
       {
         host,
@@ -117,6 +233,15 @@ function createProxy(upstream) {
     })
     req.on('error', () => upstreamReq.destroy())
     req.pipe(upstreamReq)
+  }
+
+  /** Route index paths through the auth-injecting handler, everything else plain. */
+  function handleRequest(req, res) {
+    if (isIndexPath(req.url)) {
+      handleIndexRequest(req, res)
+      return
+    }
+    proxyPlain(req, res)
   }
 
   /** Proxy one WebSocket (or other protocol) upgrade. */
@@ -158,10 +283,12 @@ function createProxy(upstream) {
     upstream,
     handleRequest,
     handleUpgrade,
+    /** @returns {string|null} the minted dsh browser cookie (for tests). */
+    getDshCookie: () => dshCookie,
     close() {
       agent.destroy()
     },
   }
 }
 
-module.exports = { createProxy }
+module.exports = { createProxy, TOKEN_QUERY }

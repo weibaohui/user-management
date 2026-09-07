@@ -623,6 +623,22 @@ const plugin = {
       return 'http://127.0.0.1:3080'
     }
 
+    // dsh 0.1.2-rc.1+ gates `/` index.html behind a launchToken + signed
+    // browser cookie (dsh-client-connection BrowserAuth). The injected
+    // `connection` service exposes browserAuth.launchToken; we feed it to the
+    // gateway proxy so index requests can mint a loopback cookie and clear the
+    // token gate. On 0.1.1-rc.2 (no BrowserAuth) launchToken stays null and the
+    // proxy falls through to a plain passthrough — backward compatible.
+    let launchToken = null
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['connection'], (conn) => {
+        try {
+          launchToken = (conn && conn.browserAuth && conn.browserAuth.launchToken) || null
+        } catch { launchToken = null }
+      })
+    }
+    const getLaunchToken = () => launchToken
+
     // The decider runs on every gateway request: IP-ban check (403) → session
     // resolve → gate decision (allow/redirect/401). onAccess feeds the activity
     // ledger; the gateway wires onApiRequest/onWsOpen to the audit ledger.
@@ -697,6 +713,7 @@ const plugin = {
             listenHost: cfg.listenHost,
             port: cfg.port,
             upstream: resolveUpstream(cfg),
+            getLaunchToken,
             sites,
             certsDir,
             title: cfg.title,
