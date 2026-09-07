@@ -311,6 +311,10 @@ test('admin reset-totp recovers a lost device; plain users cannot; guard locks b
   assert.equal(reset.data.user.totpEnabled, false)
   assert.equal((await call(`/users/${frankId}/reset-totp`, { method: 'POST', cookie: adminCookie })).status, 409, 'resetting an unenrolled account conflicts')
   assert.equal((await call('/login', { method: 'POST', body: { username: 'frank', password: 'secret1' } })).status, 200, 'password-only login after admin reset')
+  // 未开启两步验证的用户：动态码字段选填，填了也会被服务端忽略
+  const withIgnoredOtp = await call('/login', { method: 'POST', body: { username: 'frank', password: 'secret1', otp: '123456' } })
+  assert.equal(withIgnoredOtp.status, 200, 'stale/stray otp on a non-enrolled account is ignored')
+  assert.equal(withIgnoredOtp.data.otpRequired, undefined)
 
   // brute-force lockout: OTP_FAIL_LIMIT consecutive bad codes → even the
   // valid code is refused with 429 until the lockout lapses

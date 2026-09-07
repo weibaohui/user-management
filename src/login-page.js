@@ -41,11 +41,14 @@ h1 { font-size: 18px; margin: 0 0 4px; text-align: center; }
 .tabs button.active { background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
 @media (prefers-color-scheme: dark) { .tabs button.active { background: #3a3f47; } }
 label { display: block; font-size: 12px; opacity: .75; margin: 12px 0 4px; }
+label .opt { opacity: .8; font-weight: 400; }
 input {
   width: 100%; padding: 9px 11px; font-size: 14px; border-radius: 8px;
   border: 1px solid rgba(127,127,127,.35); background: transparent; color: inherit; outline: none;
 }
 input:focus { border-color: #4c6ef5; }
+.remember { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; margin: 12px 0 0; cursor: pointer; user-select: none; }
+.remember input { width: auto; margin: 0; cursor: pointer; }
 .err { min-height: 18px; font-size: 12px; color: #e03131; margin: 10px 0 2px; white-space: pre-wrap; }
 .submit {
   width: 100%; margin-top: 10px; padding: 10px 0; font-size: 14px; border: 0; border-radius: 8px;
@@ -62,15 +65,7 @@ const PAGE_SCRIPT = `
   var loginForm = document.getElementById('login-form');
   var registerForm = document.getElementById('register-form');
   var otpInput = document.getElementById('login-otp');
-  var otpLabel = document.getElementById('login-otp-label');
-  var otpShown = false;
-  function showOtp() {
-    if (otpShown) return;
-    otpShown = true;
-    otpLabel.style.display = '';
-    otpInput.style.display = '';
-    otpInput.focus();
-  }
+  var remember = document.getElementById('login-remember');
   function show(tab) {
     loginForm.style.display = tab === 'login' ? '' : 'none';
     registerForm.style.display = tab === 'register' ? '' : 'none';
@@ -94,11 +89,15 @@ const PAGE_SCRIPT = `
       return res.json().catch(function () { return {} }).then(function (data) { return { ok: res.ok, data: data } });
     }).then(function (result) {
       if (result.ok) {
-        try { localStorage.setItem('um-last-username', body.username || ''); } catch (e) {}
+        if (form === loginForm) {
+          try {
+            if (remember.checked) localStorage.setItem('um-last-username', body.username || '');
+            else localStorage.removeItem('um-last-username');
+          } catch (e) {}
+        }
         location.href = '/';
         return;
       }
-      if (result.data && result.data.otpRequired && form === loginForm) showOtp();
       errEl.textContent = (result.data && result.data.error) || '请求失败';
       button.disabled = false;
     }).catch(function () {
@@ -111,7 +110,7 @@ const PAGE_SCRIPT = `
     submit(loginForm, '/user-management/api/login', {
       username: document.getElementById('login-username').value.trim(),
       password: document.getElementById('login-password').value,
-      otp: otpShown ? otpInput.value.replace(/\\s+/g, '') : undefined,
+      otp: otpInput.value.replace(/\\s+/g, '') || undefined,
     });
   });
   registerForm.addEventListener('submit', function (e) {
@@ -155,8 +154,9 @@ function renderLoginPage({ hasUsers, title = 'DSH 控制台' } = {}) {
     '<form id="login-form">\n' +
     '<label for="login-username">用户名</label>\n<input id="login-username" autocomplete="username" required>\n' +
     '<label for="login-password">密码</label>\n<input id="login-password" type="password" autocomplete="current-password" required>\n' +
-    '<label for="login-otp" id="login-otp-label" style="display:none">两步验证码</label>\n' +
-    '<input id="login-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位动态码" style="display:none">\n' +
+    '<label for="login-otp">两步验证码 <span class="opt">（未开启请留空）</span></label>\n' +
+    '<input id="login-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="已开启两步验证？输入 6 位动态码">\n' +
+    '<label class="remember"><input type="checkbox" id="login-remember" checked> 记住用户名</label>\n' +
     '<div class="err"></div>\n' +
     '<button class="submit" type="submit">登录</button>\n</form>\n' +
     '<form id="register-form" style="display:none">\n' +

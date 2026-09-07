@@ -29,22 +29,24 @@ test('register password input carries native minlength', () => {
   assert.ok(html.includes('minlength="6"'), 'browser validates length before the server round-trip')
 })
 
-test('otp field is hidden until the server asks for it (otpRequired handshake)', () => {
+test('otp field is a always-visible optional input (no error-then-reveal handshake)', () => {
   const html = renderLoginPage({ hasUsers: true })
   assert.ok(html.includes('id="login-otp"'), 'otp input exists')
   assert.ok(html.includes('autocomplete="one-time-code"'), 'OTP autofill hint for authenticator browsers')
   assert.ok(html.includes('maxlength="6"'), '6-digit cap')
-  // hidden by default — revealing it is gated on the login response's otpRequired
-  assert.ok(html.includes('id="login-otp-label" style="display:none"'))
-  assert.ok(html.includes("id=\"login-otp\" inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" placeholder=\"6 位动态码\" style=\"display:none\""))
-  assert.ok(html.includes('otpRequired'), 'script reacts to the otpRequired flag')
-  assert.ok(html.includes("otp: otpShown ?"), 'login submit carries the code only after the field is shown')
+  // 常驻选填：不再隐藏、不再等 otpRequired 才显示
+  assert.ok(html.includes('（未开启请留空）'), 'label tells non-enrolled users to leave it empty')
+  assert.ok(!html.includes('id="login-otp" style'), 'never hidden inline')
+  assert.ok(html.includes("replace(/\\s+/g, '') || undefined"), 'empty code is sent as absent, not empty string')
+  assert.ok(!html.includes('otpRequired'), 'page no longer branches on otpRequired')
   assert.ok(!html.includes('reg-otp'), 'register form stays OTP-free')
 })
 
-test('login page remembers the last successful username via localStorage', () => {
+test('remember-username is an opt-in checkbox, gated on the checked state', () => {
   const html = renderLoginPage({ hasUsers: true })
-  assert.ok(html.includes("localStorage.setItem('um-last-username'"), 'saved on successful login')
-  assert.ok(html.includes("localStorage.getItem('um-last-username'"), 'prefilled on the next visit')
-  assert.ok(html.includes("getElementById('login-username').value = remembered"), 'restored into the username field')
+  assert.ok(html.includes('type="checkbox" id="login-remember" checked'), 'checkbox defaults to checked')
+  assert.ok(html.includes('记住用户名'), 'visible label')
+  assert.ok(html.includes('if (remember.checked) localStorage.setItem'), 'saved only when checked')
+  assert.ok(html.includes('else localStorage.removeItem'), 'unchecked clears the stored name')
+  assert.ok(html.includes("document.getElementById('login-username').value = remembered"), 'prefilled on the next visit')
 })
