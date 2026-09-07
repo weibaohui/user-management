@@ -61,6 +61,16 @@ const PAGE_SCRIPT = `
   var hasUsers = __HAS_USERS__;
   var loginForm = document.getElementById('login-form');
   var registerForm = document.getElementById('register-form');
+  var otpInput = document.getElementById('login-otp');
+  var otpLabel = document.getElementById('login-otp-label');
+  var otpShown = false;
+  function showOtp() {
+    if (otpShown) return;
+    otpShown = true;
+    otpLabel.style.display = '';
+    otpInput.style.display = '';
+    otpInput.focus();
+  }
   function show(tab) {
     loginForm.style.display = tab === 'login' ? '' : 'none';
     registerForm.style.display = tab === 'register' ? '' : 'none';
@@ -83,7 +93,12 @@ const PAGE_SCRIPT = `
     }).then(function (res) {
       return res.json().catch(function () { return {} }).then(function (data) { return { ok: res.ok, data: data } });
     }).then(function (result) {
-      if (result.ok) { location.href = '/'; return; }
+      if (result.ok) {
+        try { localStorage.setItem('um-last-username', body.username || ''); } catch (e) {}
+        location.href = '/';
+        return;
+      }
+      if (result.data && result.data.otpRequired && form === loginForm) showOtp();
       errEl.textContent = (result.data && result.data.error) || '请求失败';
       button.disabled = false;
     }).catch(function () {
@@ -96,6 +111,7 @@ const PAGE_SCRIPT = `
     submit(loginForm, '/user-management/api/login', {
       username: document.getElementById('login-username').value.trim(),
       password: document.getElementById('login-password').value,
+      otp: otpShown ? otpInput.value.replace(/\\s+/g, '') : undefined,
     });
   });
   registerForm.addEventListener('submit', function (e) {
@@ -111,6 +127,10 @@ const PAGE_SCRIPT = `
       password: password,
     });
   });
+  try {
+    var remembered = localStorage.getItem('um-last-username');
+    if (remembered) document.getElementById('login-username').value = remembered;
+  } catch (e) {}
   if (!hasUsers) {
     document.getElementById('first-hint').style.display = '';
     show('register');
@@ -135,6 +155,8 @@ function renderLoginPage({ hasUsers, title = 'DSH 控制台' } = {}) {
     '<form id="login-form">\n' +
     '<label for="login-username">用户名</label>\n<input id="login-username" autocomplete="username" required>\n' +
     '<label for="login-password">密码</label>\n<input id="login-password" type="password" autocomplete="current-password" required>\n' +
+    '<label for="login-otp" id="login-otp-label" style="display:none">两步验证码</label>\n' +
+    '<input id="login-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位动态码" style="display:none">\n' +
     '<div class="err"></div>\n' +
     '<button class="submit" type="submit">登录</button>\n</form>\n' +
     '<form id="register-form" style="display:none">\n' +

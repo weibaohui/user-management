@@ -144,6 +144,27 @@ const ZH = {
   typeRoleChange: '角色变更',
   typeDeleteUser: '删除用户',
   typeAccess: '页面访问',
+  typeTotpEnabled: '开启两步验证',
+  typeTotpDisabled: '关闭两步验证',
+  typeTotpReset: '重置两步验证',
+  totpTitle: '两步验证',
+  totpStatusOn: '已开启',
+  totpStatusOff: '未开启',
+  totpHint: '开启后，登录除密码外还需输入验证器 App 生成的 6 位动态码。',
+  totpEnableAction: '开启两步验证',
+  totpDisableAction: '关闭两步验证',
+  totpScanHint: '用验证器 App（Google Authenticator、1Password、微软验证器等）扫码，或手动输入下方密钥：',
+  totpCodeLabel: '输入 App 显示的 6 位动态码完成绑定',
+  totpCodePlaceholder: '6 位动态码',
+  totpActivateAction: '验证并开启',
+  totpEnabledToast: '两步验证已开启',
+  totpDisabledToast: '两步验证已关闭',
+  totpDisablePwdLabel: '输入登录密码确认关闭',
+  totpDisableConfirmTitle: '关闭两步验证',
+  totpResetAction: '重置两步验证',
+  totpResetConfirm: '重置 {name} 的两步验证？该用户下次登录将只需密码，并可重新绑定。',
+  totpResetDone: '两步验证已重置',
+  totpBadge: '两步',
   userCount: '{n} 个用户',
 }
 
@@ -256,6 +277,27 @@ const EN = {
   typeRoleChange: 'Role change',
   typeDeleteUser: 'User deleted',
   typeAccess: 'Page access',
+  typeTotpEnabled: '2-step enabled',
+  typeTotpDisabled: '2-step disabled',
+  typeTotpReset: '2-step reset',
+  totpTitle: 'Two-Step Verification',
+  totpStatusOn: 'On',
+  totpStatusOff: 'Off',
+  totpHint: 'When enabled, signing in requires a 6-digit code from your authenticator app in addition to the password.',
+  totpEnableAction: 'Enable 2-Step',
+  totpDisableAction: 'Disable 2-Step',
+  totpScanHint: 'Scan with an authenticator app (Google Authenticator, 1Password, Microsoft Authenticator, …), or enter the key manually:',
+  totpCodeLabel: 'Enter the 6-digit code from the app to finish enrollment',
+  totpCodePlaceholder: '6-digit code',
+  totpActivateAction: 'Verify & Enable',
+  totpEnabledToast: 'Two-step verification enabled',
+  totpDisabledToast: 'Two-step verification disabled',
+  totpDisablePwdLabel: 'Enter your login password to confirm',
+  totpDisableConfirmTitle: 'Disable Two-Step Verification',
+  totpResetAction: 'Reset 2-Step',
+  totpResetConfirm: "Reset {name}'s two-step verification? Their next sign-in needs the password only, and they can re-enroll.",
+  totpResetDone: 'Two-step verification reset',
+  totpBadge: '2FA',
   userCount: '{n} user(s)',
 }
 
@@ -275,6 +317,9 @@ const TYPE_LABELS = {
   user_enabled: 'typeUserEnabled',
   ban_ip: 'typeBanIp',
   unban_ip: 'typeUnbanIp',
+  totp_enabled: 'typeTotpEnabled',
+  totp_disabled: 'typeTotpDisabled',
+  totp_reset: 'typeTotpReset',
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -409,6 +454,9 @@ const STYLE = `
 .um-kv { display: grid; grid-template-columns: 96px 1fr; gap: 6px 12px; font-size: 13px; }
 .um-kv dt { color: var(--dsw-alias-label-secondary); }
 .um-kv dd { margin: 0; }
+/* QR ground must stay light for scanner contrast — functional, not themed. */
+.um-qr { background: white; padding: 10px; border-radius: 10px; width: fit-content; border: 1px solid var(--dsw-alias-border-l1); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.um-qr svg { display: block; }
 `
 
 function ensureStyles() {
@@ -707,6 +755,15 @@ function UsersTab({ me, __t: t, flash }) {
     })
   }
 
+  const resetTotp = (user) => {
+    if (!window.confirm(interpolate(t('totpResetConfirm'), { name: user.username }))) return
+    act(user, async () => {
+      await api(`/users/${user.id}/reset-totp`, { method: 'POST' })
+      flash(t('totpResetDone'))
+      await load()
+    })
+  }
+
   const submitCreate = (e) => {
     e.preventDefault()
     api('/users', { method: 'POST', body: form })
@@ -740,7 +797,8 @@ function UsersTab({ me, __t: t, flash }) {
           h('td', null, user.username, user.id === me.id ? t('you') : null),
           h('td', null, h('span', { className: 'um-row', style: { gap: 4 } },
             h(RoleBadge, { role: user.role, __t: t }),
-            user.disabled ? h('span', { className: 'um-badge um-badge-err' }, t('badgeDisabled')) : null)),
+            user.disabled ? h('span', { className: 'um-badge um-badge-err' }, t('badgeDisabled')) : null,
+            user.totpEnabled ? h('span', { className: 'um-badge um-badge-ok' }, t('totpBadge')) : null)),
           h('td', { className: 'um-muted' }, formatTime(user.createdAt)),
           h('td', { className: 'um-muted' }, formatTime(user.lastLoginAt)),
           h('td', null, h('div', { className: 'um-row', style: { justifyContent: 'flex-end' } },
@@ -755,6 +813,10 @@ function UsersTab({ me, __t: t, flash }) {
               title: user.id === me.id ? '-' : undefined,
               onClick: () => toggleDisabled(user),
             }, user.disabled ? t('actionEnable') : t('actionDisable')),
+            user.totpEnabled ? h('button', {
+              className: 'um-btn', disabled: busyId === user.id,
+              title: t('totpResetAction'), onClick: () => resetTotp(user),
+            }, t('totpResetAction')) : null,
             h('button', {
               className: 'um-btn um-btn-danger', disabled: busyId === user.id || user.id === me.id,
               onClick: () => remove(user),
@@ -1042,6 +1104,126 @@ function CertCard({ __t: t }) {
               copied === os ? t('certCopied') : t('copy'))))))
 }
 
+/** Two-step verification self-service card — status, enrollment (QR +
+ *  manual key + live-code check) and password-confirmed disable. Used both
+ *  in MyPanel (plain users) and as its own AdminPanel tab (admins' own). */
+function TotpCard({ me, __t: t, flash }) {
+  const [enabled, setEnabled] = useState(!!me.totpEnabled)
+  const [settingUp, setSettingUp] = useState(false)
+  const [disabling, setDisabling] = useState(false)
+  return h('div', { className: 'um-card' },
+    h('div', { className: 'um-head' },
+      h('h3', { className: 'um-title' }, t('totpTitle')),
+      h('div', { className: 'um-row' },
+        h('span', { className: enabled ? 'um-badge um-badge-ok' : 'um-badge' }, enabled ? t('totpStatusOn') : t('totpStatusOff')),
+        enabled
+          ? h('button', { className: 'um-btn um-btn-danger', onClick: () => setDisabling(true) }, t('totpDisableAction'))
+          : h('button', { className: 'um-btn um-btn-primary', onClick: () => setSettingUp(true) }, t('totpEnableAction')))),
+    h('p', { className: 'um-muted', style: { margin: '0 0 4px' } }, t('totpHint')),
+    settingUp && h(TotpSetupDialog, {
+      onClose: () => setSettingUp(false),
+      onEnabled: () => { setSettingUp(false); setEnabled(true); flash(t('totpEnabledToast')) },
+      __t: t,
+    }),
+    disabling && h(TotpDisableDialog, {
+      onClose: () => setDisabling(false),
+      onDisabled: () => { setDisabling(false); setEnabled(false); flash(t('totpDisabledToast')) },
+      __t: t,
+    }))
+}
+
+/** Enrollment dialog: fetches the pending secret, shows the QR + manual key,
+ *  then activates against a live code from the authenticator. */
+function TotpSetupDialog({ onClose, onEnabled, __t: t }) {
+  const [info, setInfo] = useState(null) // { secret, otpauth, qrSvg }
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    api('/me/totp/setup', { method: 'POST' })
+      .then(setInfo)
+      .catch((e) => setErr(String(e && e.message)))
+  }, [])
+
+  const copySecret = () => {
+    try {
+      navigator.clipboard.writeText(info.secret).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) }, () => {})
+    } catch { /* clipboard unavailable */ }
+  }
+
+  const activate = () => {
+    if (!code.trim() || busy) return
+    setBusy(true)
+    setErr('')
+    api('/me/totp/activate', { method: 'POST', body: { code: code.trim() } })
+      .then(onEnabled)
+      .catch((e) => setErr(String(e && e.message)))
+      .finally(() => setBusy(false))
+  }
+
+  return h(UmDialog, {
+    title: t('totpEnableAction'), onClose,
+    footer: [
+      h('button', { className: 'um-btn', onClick: onClose }, '✕'),
+      h('button', { className: 'um-btn um-btn-primary', onClick: activate, disabled: busy || !info }, t('totpActivateAction')),
+    ],
+  },
+    !info && !err && h('div', { className: 'um-muted' }, t('loading')),
+    info && h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+      h('div', { className: 'um-qr', dangerouslySetInnerHTML: { __html: info.qrSvg } }),
+      h('p', { className: 'um-muted', style: { margin: 0 } }, t('totpScanHint')),
+      h('div', { className: 'um-row' },
+        h('code', { style: { fontSize: 12, wordBreak: 'break-all', flex: 1 } }, info.secret),
+        h('button', { className: 'um-btn', style: { flex: 'none' }, onClick: copySecret }, copied ? t('copied') : t('copy'))),
+      h('label', { htmlFor: 'um-totp-code' }, t('totpCodeLabel')),
+      h('input', {
+        id: 'um-totp-code', className: 'um-input', inputMode: 'numeric', maxLength: 6,
+        placeholder: t('totpCodePlaceholder'), value: code, autoFocus: true,
+        onChange: (e) => setCode(e.target.value),
+        onKeyDown: (e) => { if (e.key === 'Enter') activate() },
+      })),
+    err && h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: 12 } }, err))
+}
+
+/** Disable dialog — demands the login password so a stolen session alone
+ *  cannot weaken the account. */
+function TotpDisableDialog({ onClose, onDisabled, __t: t }) {
+  const [pwd, setPwd] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const submit = () => {
+    if (!pwd || busy) return
+    setBusy(true)
+    setErr('')
+    api('/me/totp/disable', { method: 'POST', body: { password: pwd } })
+      .then(onDisabled)
+      .catch((e) => setErr(String(e && e.message)))
+      .finally(() => setBusy(false))
+  }
+
+  return h(UmDialog, {
+    title: t('totpDisableConfirmTitle'), onClose,
+    footer: [
+      h('button', { className: 'um-btn', onClick: onClose }, '✕'),
+      h('button', { className: 'um-btn um-btn-danger', onClick: submit, disabled: busy || !pwd }, t('totpDisableAction')),
+    ],
+  },
+    h('form', {
+      className: 'um-form', style: { maxWidth: 'none' },
+      onSubmit: (e) => { e.preventDefault(); submit() },
+    },
+      h('label', { htmlFor: 'um-totp-disable-pwd' }, t('totpDisablePwdLabel')),
+      h('input', {
+        id: 'um-totp-disable-pwd', className: 'um-input', type: 'password',
+        autoComplete: 'current-password', value: pwd, required: true, autoFocus: true,
+        onChange: (e) => setPwd(e.target.value),
+      }),
+      err && h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: 12 } }, err)))
+}
+
 function MyPanel({ me, __t: t, flash }) {
   const [oldPwd, setOldPwd] = useState('')
   const [newPwd, setNewPwd] = useState('')
@@ -1080,6 +1262,7 @@ function MyPanel({ me, __t: t, flash }) {
       h('label', { htmlFor: 'um-conf-pwd' }, t('confirmPwd')),
       h('input', { id: 'um-conf-pwd', className: 'um-input', type: 'password', autoComplete: 'new-password', value: confirmPwd, onChange: (e) => setConfirmPwd(e.target.value), required: true }),
       h('div', null, h('button', { className: 'um-btn um-btn-primary', type: 'submit', disabled: busy }, t('save')))),
+    h(TotpCard, { me, __t: t, flash }),
     h('div', { className: 'um-card' },
       h('h3', { className: 'um-title', style: { marginBottom: 10 } }, t('tabLoginLog')),
       entries === null
@@ -1123,7 +1306,7 @@ function UserManagementSection({ __t: t }) {
 
 function AdminPanel({ me, __t: t, flash }) {
   const [tab, setTab] = useState('users')
-  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')], ['cert', t('certTitle')]]
+  const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')], ['cert', t('certTitle')], ['totp', t('totpTitle')]]
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
     h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 } },
       h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
@@ -1133,7 +1316,8 @@ function AdminPanel({ me, __t: t, flash }) {
       : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
         : tab === 'bans' ? h(BansTab, { __t: t, flash })
           : tab === 'cert' ? h(CertCard, { __t: t })
-            : h(ActivityTab, { kind: tab, __t: t, flash }))
+            : tab === 'totp' ? h(TotpCard, { me, __t: t, flash })
+              : h(ActivityTab, { kind: tab, __t: t, flash }))
 }
 
 // ── module wiring ─────────────────────────────────────────────────────────
@@ -1147,7 +1331,7 @@ module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
   __boot,
-  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection, AdminPanel },
+  __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection, AdminPanel, TotpCard, TotpSetupDialog, TotpDisableDialog },
   apply(ctx) {
     ctx.locale.register(NS, 'zh', ZH)
     ctx.locale.register(NS, 'en', EN)

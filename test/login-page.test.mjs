@@ -28,3 +28,23 @@ test('register password input carries native minlength', () => {
   const html = renderLoginPage({ hasUsers: false })
   assert.ok(html.includes('minlength="6"'), 'browser validates length before the server round-trip')
 })
+
+test('otp field is hidden until the server asks for it (otpRequired handshake)', () => {
+  const html = renderLoginPage({ hasUsers: true })
+  assert.ok(html.includes('id="login-otp"'), 'otp input exists')
+  assert.ok(html.includes('autocomplete="one-time-code"'), 'OTP autofill hint for authenticator browsers')
+  assert.ok(html.includes('maxlength="6"'), '6-digit cap')
+  // hidden by default — revealing it is gated on the login response's otpRequired
+  assert.ok(html.includes('id="login-otp-label" style="display:none"'))
+  assert.ok(html.includes("id=\"login-otp\" inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" placeholder=\"6 位动态码\" style=\"display:none\""))
+  assert.ok(html.includes('otpRequired'), 'script reacts to the otpRequired flag')
+  assert.ok(html.includes("otp: otpShown ?"), 'login submit carries the code only after the field is shown')
+  assert.ok(!html.includes('reg-otp'), 'register form stays OTP-free')
+})
+
+test('login page remembers the last successful username via localStorage', () => {
+  const html = renderLoginPage({ hasUsers: true })
+  assert.ok(html.includes("localStorage.setItem('um-last-username'"), 'saved on successful login')
+  assert.ok(html.includes("localStorage.getItem('um-last-username'"), 'prefilled on the next visit')
+  assert.ok(html.includes("getElementById('login-username').value = remembered"), 'restored into the username field')
+})
