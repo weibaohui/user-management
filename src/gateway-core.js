@@ -50,7 +50,7 @@ const {
 function createGateway(options) {
   const log = typeof options.log === 'function' ? options.log : () => {}
   const warn = typeof options.warn === 'function' ? options.warn : log
-  const proxy = createProxy(options.upstream, options.getLaunchToken)
+  const proxy = createProxy(options.upstream, options.getAuthenticatedUrl)
 
   const sites = (options.sites || [{ hosts: ['localhost'] }]).map((site) => ({
     hosts: (site.hosts || []).map((h) => String(h).toLowerCase()),

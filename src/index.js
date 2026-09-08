@@ -773,22 +773,29 @@ const plugin = {
 
     // dsh 0.1.2-rc.1+ gates `/` index.html behind a launchToken + signed
     // browser cookie (dsh-client-connection BrowserAuth). The injected
-    // `connection` service exposes browserAuth.launchToken; we feed it to the
-    // gateway proxy so index requests can mint a loopback cookie and clear the
-    // token gate. On 0.1.1-rc.2 (no BrowserAuth) launchToken stays null and the
-    // proxy falls through to a plain passthrough — backward compatible.
-    let launchToken = null
+    // `connection` service exposes the PUBLIC authenticatedUrl(baseUrl)
+    // builder — the sanctioned way to obtain a token-carrying URL (reading
+    // BrowserAuth.launchToken directly would couple us to a TS-private
+    // field). We hand the gateway a builder that binds the token URL to the
+    // upstream origin at call time, so hot-reloaded upstreams stay in sync.
+    // On 0.1.1-rc.2 (no BrowserAuth) the builder stays null and the proxy
+    // falls through to a plain passthrough — backward compatible.
+    let authenticatedUrlBuilder = null
     if (typeof ctx.inject === 'function') {
       ctx.inject(['connection'], (fiber) => {
         try {
           // ctx.inject delivers a fiber whose `.connection` is the registered
           // HostConnectionService (cf. the existing settings inject: scope.settings).
           const conn = (fiber && fiber.connection) || fiber
-          launchToken = (conn && conn.browserAuth && conn.browserAuth.launchToken) || null
-        } catch { launchToken = null }
+          authenticatedUrlBuilder = conn && typeof conn.authenticatedUrl === 'function'
+            ? (origin) => {
+                try { return conn.authenticatedUrl(origin) } catch { return null }
+              }
+            : null
+        } catch { authenticatedUrlBuilder = null }
       })
     }
-    const getLaunchToken = () => launchToken
+    const getAuthenticatedUrl = () => authenticatedUrlBuilder
 
     // The decider runs on every gateway request: IP-ban check (403) → session
     // resolve → gate decision (allow/redirect/401). onAccess feeds the activity
@@ -864,7 +871,7 @@ const plugin = {
             listenHost: cfg.listenHost,
             port: cfg.port,
             upstream: resolveUpstream(cfg),
-            getLaunchToken,
+            getAuthenticatedUrl,
             sites,
             certsDir,
             title: cfg.title,

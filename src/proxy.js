@@ -17,10 +17,12 @@
  * dsh 0.1.2-rc.1+ note: dsh-client-connection now gates the `/` index.html
  * behind a launchToken + authority-bound signed cookie (BrowserAuth). The
  * gateway already authenticates the human at its own layer, so for index
- * requests we mint a loopback browser cookie from the dsh launchToken
- * (obtained via the injected `connection` service) and inject it upstream,
- * letting authorizeIndex pass. On 0.1.1-rc.2 (no BrowserAuth) getLaunchToken
- * yields null and we fall through to a plain proxy — fully backward compatible.
+ * requests we mint a loopback browser cookie via the host's PUBLIC
+ * `connection.authenticatedUrl(baseUrl)` builder (the sanctioned way to obtain
+ * a token-carrying URL — BrowserAuth.launchToken itself is TS-private) and
+ * inject it upstream, letting authorizeIndex pass. On 0.1.1-rc.2 (no
+ * BrowserAuth) getAuthenticatedUrl yields null and we fall through to a plain
+ * proxy — fully backward compatible.
  */
 
 const http = require('node:http')
@@ -39,11 +41,8 @@ const HOP_BY_HOP = new Set([
   'upgrade',
 ])
 
-/** Query key dsh-client-connection's authorizeIndex honours for the token exchange. */
-const TOKEN_QUERY = 'token'
-
 /** Create a proxy target from an http upstream URL string. */
-function createProxy(upstream, getLaunchToken) {
+function createProxy(upstream, getAuthenticatedUrl) {
   const target = new URL(upstream)
   if (target.protocol !== 'http:') {
     throw new Error(`user-management: upstream must be plain http (loopback), got ${target.protocol}`)
@@ -57,8 +56,9 @@ function createProxy(upstream, getLaunchToken) {
   const upstreamOrigin = `http://${upstreamAuthority}`
 
   // dsh-client-connection browser-session cookie for upstreamAuthority.
-  // Minted once from the launchToken, reused across index requests, refreshed
-  // when the upstream answers 401 (cookie expired / dsh restarted with a new token).
+  // Minted once via the host's authenticatedUrl() token exchange, reused
+  // across index requests, refreshed when the upstream answers 401 (cookie
+  // expired after its 30-day max age / dsh restarted with a new token).
   let dshCookie = null
 
   const forwardHeaders = (req) => {
@@ -101,11 +101,28 @@ function createProxy(upstream, getLaunchToken) {
     return headers
   }
 
-  /** Mint a loopback browser cookie from the dsh launchToken via the token exchange. */
+  /**
+   * Mint a loopback browser cookie from the dsh launch token. The token URL
+   * comes from the host's PUBLIC `connection.authenticatedUrl(origin)` — we
+   * never touch BrowserAuth's private fields nor hardcode its query key.
+   */
   const refreshDshCookie = () =>
     new Promise((resolve) => {
-      const token = typeof getLaunchToken === 'function' ? getLaunchToken() : null
-      if (!token) {
+      let authUrl = null
+      try {
+        authUrl = typeof getAuthenticatedUrl === 'function' ? getAuthenticatedUrl(`http://${upstreamAuthority}`) : null
+      } catch {
+        authUrl = null
+      }
+      if (!authUrl) {
+        resolve(false)
+        return
+      }
+      let path = '/'
+      try {
+        const parsed = new URL(authUrl)
+        path = `${parsed.pathname}${parsed.search}` || '/'
+      } catch {
         resolve(false)
         return
       }
@@ -114,7 +131,7 @@ function createProxy(upstream, getLaunchToken) {
           host,
           port,
           method: 'GET',
-          path: `/?${TOKEN_QUERY}=${encodeURIComponent(token)}`,
+          path,
           headers: { host: upstreamAuthority, origin: upstreamOrigin },
           agent,
         },
@@ -294,4 +311,4 @@ function createProxy(upstream, getLaunchToken) {
   }
 }
 
-module.exports = { createProxy, TOKEN_QUERY }
+module.exports = { createProxy }

@@ -1,6 +1,7 @@
 // Unit tests for the gateway reverse proxy's dsh-client-connection token-gate
-// adaptation: index requests mint a loopback cookie from the dsh launchToken
-// and inject it upstream; non-index paths proxy plain; with no launchToken
+// adaptation: the proxy mints a loopback cookie via the host's PUBLIC
+// connection.authenticatedUrl(origin) builder (a token-carrying URL) and
+// injects it upstream; non-index paths proxy plain; with no builder
 // (dsh 0.1.1-rc.2, no BrowserAuth) the proxy falls through to passthrough.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -80,19 +81,19 @@ function get(proxy, path, headers = {}) {
   })
 }
 
-test('index request mints a cookie from launchToken and serves 200 index', async () => {
-  const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, () => 'LAUNCH')
+test('index request mints a cookie via authenticatedUrl and serves 200 index', async () => {
+  const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, (origin) => `${origin}/?token=LAUNCH`)
   const res = await get(proxy, '/')
   assert.equal(res.status, 200, `expected 200, got ${res.status}: ${res.body}`)
   assert.match(res.body, /index/)
-  assert.ok(proxy.getDshCookie(), 'a loopback cookie was minted from the launchToken')
+  assert.ok(proxy.getDshCookie(), 'a loopback cookie was minted from the authenticatedUrl token')
   // The upstream's Set-Cookie (loopbound) must NOT leak to the public client.
   assert.equal(res.headers['set-cookie'], undefined, 'loopback cookie not forwarded to the browser')
   proxy.close()
 })
 
 test('non-index path proxies plain — cookie minted + injected (fix for /api/ 401 on dsh 0.1.2-rc.1)', async () => {
-  const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, () => 'LAUNCH')
+  const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, (origin) => `${origin}/?token=LAUNCH`)
   const res = await get(proxy, '/api/foo')
   assert.equal(res.status, 200)
   assert.equal(res.body, 'api')
@@ -100,7 +101,7 @@ test('non-index path proxies plain — cookie minted + injected (fix for /api/ 4
   proxy.close()
 })
 
-test('no launchToken (dsh 0.1.1-rc.2) falls through — index reaches upstream ungated', async () => {
+test('no authenticatedUrl builder (dsh 0.1.1-rc.2) falls through — index reaches upstream ungated', async () => {
   const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, () => null)
   const res = await get(proxy, '/')
   // Upstream has the gate, so without an injected cookie it answers 401 —
@@ -112,7 +113,7 @@ test('no launchToken (dsh 0.1.1-rc.2) falls through — index reaches upstream u
 })
 
 test('index with a query string still counts as index and gets the cookie', async () => {
-  const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, () => 'LAUNCH')
+  const proxy = createProxy(`http://127.0.0.1:${upstreamPort}`, (origin) => `${origin}/?token=LAUNCH`)
   const res = await get(proxy, '/?foo=bar')
   assert.equal(res.status, 200, `expected 200, got ${res.status}`)
   assert.ok(proxy.getDshCookie(), 'cookie minted for index with query')
