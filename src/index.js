@@ -795,7 +795,12 @@ const plugin = {
         } catch { authenticatedUrlBuilder = null }
       })
     }
-    const getAuthenticatedUrl = () => authenticatedUrlBuilder
+    // Binds at call time: proxy.js invokes getAuthenticatedUrl(origin) and
+    // needs the token URL string, not the builder function itself. Returning
+    // the bare builder (v0.8.0) made new URL(fn) throw inside the mint and
+    // silently skip cookie minting — masked on 0.1.1-rc.2 where the builder
+    // is null and the plain-proxy fallback was used regardless.
+    const getAuthenticatedUrl = (origin) => (authenticatedUrlBuilder ? authenticatedUrlBuilder(origin) : null)
 
     // The decider runs on every gateway request: IP-ban check (403) → session
     // resolve → gate decision (allow/redirect/401). onAccess feeds the activity
