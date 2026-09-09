@@ -187,7 +187,7 @@ test('otpGuard: consecutive failures lock, even valid codes wait, reset clears',
 let server, port, deps
 
 beforeEach(async () => {
-  deps = { store, clientIp: () => '203.0.113.9' }
+  deps = { store, clientIp: () => '203.0.113.9', autoActivate: () => true }
   server = http.createServer((req, res) => {
     handleApi(req, res, deps).catch((error) => {
       if (!res.headersSent) {

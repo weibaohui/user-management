@@ -239,8 +239,19 @@ async function handleApi(req, res, deps) {
     const body = await readJsonBody(req)
     const username = typeof body.username === 'string' ? body.username.trim() : ''
     const role = store.roleForNextRegistration()
+    // Approval mode (autoActivate off, the default): every self-registration
+    // except the first admin starts DISABLED until an admin enables the
+    // account — the users-table enable button is the approval action. The
+    // bare-handler test harness (no deps.autoActivate) keeps classic
+    // auto-activation so old flows read unchanged.
+    const autoActivate = deps.autoActivate ? deps.autoActivate() === true : true
+    const pending = role !== 'admin' && !autoActivate
     try {
-      const created = await store.createUser({ username, password: body.password, role })
+      const created = await store.createUser({ username, password: body.password, role, disabled: pending })
+      if (pending) {
+        await store.appendActivity({ type: 'register', username: created.username, userId: created.id, ip: deps.clientIp(req), detail: `role=${role} pending` })
+        return sendJson(res, 200, { user: created, pending: true })
+      }
       const user = store.findUserByUsername(created.username)
       const { token } = await store.createSession(user)
       await store.touchLogin(user)
@@ -549,6 +560,10 @@ async function handleApi(req, res, deps) {
 // ── schemastery config (the `user-management:` settings namespace) ──────────
 const Config = z.object({
   enabled: z.boolean().default(true),
+  // Registration approval switch: false (default) puts every self-registered
+  // account (first admin excepted) into the disabled state until an admin
+  // enables it from the users table; true activates registrations immediately.
+  autoActivate: z.boolean().default(false),
   listenHost: z.string().default('0.0.0.0'),
   port: z.natural().min(1).max(65535).default(19843),
   sites: z
@@ -847,6 +862,8 @@ const plugin = {
     let restarting = false
     let rebuildChain = Promise.resolve()
     const resolvedConfig = () => (settingsScope ? settingsScope.get() : config)
+    // Registration approval switch, read per request so settings hot-reload applies.
+    deps.autoActivate = () => resolvedConfig().autoActivate === true
 
     const queueRebuild = (force = false) => {
       rebuildChain = rebuildChain

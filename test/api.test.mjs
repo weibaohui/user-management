@@ -46,7 +46,7 @@ beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), 'um-api-'))
   store = createStore({ home })
   await store.load()
-  deps = { store, clientIp: () => '127.0.0.1' }
+  deps = { store, clientIp: () => '127.0.0.1', autoActivate: () => true }
   server = http.createServer((req, res) => {
     withAudit(handleApi, deps)(req, res).catch((error) => {
       if (!res.headersSent) {
@@ -267,4 +267,39 @@ test('permission matrix: anonymous / plain user / admin across every endpoint', 
 
   // ── unknown route ──
   assert.equal((await call('/nope', { cookie: adminCookie })).status, 404)
+})
+
+test('registration approval mode (autoActivate off): self-registered users wait for admin enable', async () => {
+  // ── registration approval mode (autoActivate off) ──
+  deps.autoActivate = () => false
+  const owner = await call('/register', { method: 'POST', body: { username: 'owner', password: 'secret1' } })
+  assert.equal(owner.status, 200)
+  assert.ok(cookieOf(owner), 'first admin registers active with a session regardless of the switch')
+  assert.equal(owner.data.user.disabled, false)
+  assert.equal(owner.data.pending, undefined)
+  const ownerCookie = cookieOf(owner)
+
+  const waiterReg = await call('/register', { method: 'POST', body: { username: 'waiter', password: 'secret1' } })
+  assert.equal(waiterReg.status, 200)
+  assert.equal(waiterReg.data.pending, true, 'approval-mode registration reports pending')
+  assert.equal(waiterReg.data.user.disabled, true, 'pending account is disabled')
+  assert.equal(cookieOf(waiterReg), null, 'pending registration gets NO session')
+
+  const pendingLogin = await call('/login', { method: 'POST', body: { username: 'waiter', password: 'secret1' } })
+  assert.equal(pendingLogin.status, 403)
+  assert.ok(String(pendingLogin.data.error).includes('禁用'), 'pending user cannot sign in yet')
+
+  const usersNow = await call('/users', { cookie: ownerCookie })
+  const waiter = usersNow.data.users.find((u) => u.username === 'waiter')
+  assert.equal(waiter.disabled, true, 'admin sees the pending account as disabled')
+  const approve = await call(`/users/${waiter.id}/disabled`, { method: 'POST', body: { disabled: false }, cookie: ownerCookie })
+  assert.equal(approve.status, 200, 'admin enable = approval action')
+  const approvedLogin = await call('/login', { method: 'POST', body: { username: 'waiter', password: 'secret1' } })
+  assert.equal(approvedLogin.status, 200, 'approved user signs in')
+
+  deps.autoActivate = () => true
+  const instant = await call('/register', { method: 'POST', body: { username: 'instant', password: 'secret1' } })
+  assert.equal(instant.status, 200)
+  assert.equal(instant.data.pending, undefined)
+  assert.ok(cookieOf(instant), 'autoActivate on: registration signs in immediately (classic)')
 })
