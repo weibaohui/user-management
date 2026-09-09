@@ -50,6 +50,7 @@ input:focus { border-color: #4c6ef5; }
 .remember { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; margin: 12px 0 0; cursor: pointer; user-select: none; }
 .remember input { width: auto; margin: 0; cursor: pointer; }
 .err { min-height: 18px; font-size: 12px; color: #e03131; margin: 10px 0 2px; white-space: pre-wrap; }
+.reg-note { font-size: 12px; color: #2b8a3e; margin: 10px 0 2px; white-space: pre-wrap; }
 .submit {
   width: 100%; margin-top: 10px; padding: 10px 0; font-size: 14px; border: 0; border-radius: 8px;
   background: #4c6ef5; color: #fff; cursor: pointer;
@@ -73,6 +74,7 @@ const PAGE_SCRIPT = `
     document.getElementById('tab-register').classList.toggle('active', tab === 'register');
     loginForm.querySelector('.err').textContent = '';
     registerForm.querySelector('.err').textContent = '';
+    document.getElementById('reg-note').textContent = '';
   }
   document.getElementById('tab-login').addEventListener('click', function () { show('login') });
   document.getElementById('tab-register').addEventListener('click', function () { show('register') });
@@ -89,6 +91,12 @@ const PAGE_SCRIPT = `
       return res.json().catch(function () { return {} }).then(function (data) { return { ok: res.ok, data: data } });
     }).then(function (result) {
       if (result.ok) {
+        if (form === registerForm && result.data && result.data.pending) {
+          // approval mode: registered as disabled — no session, stay and inform
+          document.getElementById('reg-note').textContent = '注册成功！账号需管理员审核启用后方可登录，请稍后再来。';
+          button.disabled = false;
+          return;
+        }
         if (form === loginForm) {
           try {
             if (remember.checked) localStorage.setItem('um-last-username', body.username || '');
@@ -164,6 +172,7 @@ function renderLoginPage({ hasUsers, title = 'DSH 控制台' } = {}) {
     '<label for="reg-password">密码（至少 6 位）</label>\n<input id="reg-password" type="password" autocomplete="new-password" minlength="6" required>\n' +
     '<label for="reg-password2">确认密码</label>\n<input id="reg-password2" type="password" autocomplete="new-password" required>\n' +
     '<div class="err"></div>\n' +
+    '<div class="reg-note" id="reg-note"></div>\n' +
     '<button class="submit" type="submit">注册并登录</button>\n' +
     `<div class="hint" id="first-hint" style="display:none">当前还没有任何账号，首个注册的账号将成为管理员</div>\n</form>\n` +
     '<div class="foot">dsh 插件 · user-management</div>\n' +

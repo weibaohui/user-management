@@ -219,7 +219,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     return usersDoc.users.filter((u) => u.role === 'admin').length
   }
 
-  async function createUser({ username, password, role = 'user' }) {
+  async function createUser({ username, password, role = 'user', disabled = false }) {
     if (!isValidUsername(username)) throw new StoreError('bad_username', '用户名需 2-32 位，仅限字母/数字/下划线/连字符')
     if (!isValidPassword(password)) throw new StoreError('bad_password', `密码至少 ${MIN_PASSWORD_LEN} 位`)
     if (findUserByUsername(username)) throw new StoreError('duplicate', '用户名已存在')
@@ -234,6 +234,9 @@ function createStore({ home, now = () => Date.now() } = {}) {
       createdAt: now(),
       lastLoginAt: null,
     }
+    // Approval-mode registrations land disabled (the admin enable button is
+    // the approval action); admin-created accounts are always active.
+    if (disabled) user.disabled = true
     usersDoc.users.push(user)
     await persistUsers()
     return publicUser(user)

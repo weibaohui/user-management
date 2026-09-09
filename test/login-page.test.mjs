@@ -42,6 +42,15 @@ test('otp field is a always-visible optional input (no error-then-reveal handsha
   assert.ok(!html.includes('reg-otp'), 'register form stays OTP-free')
 })
 
+test('register form carries the approval note and the pending branch', () => {
+  const html = renderLoginPage({ hasUsers: false })
+  assert.ok(html.includes('id="reg-note"'), 'approval note element exists')
+  assert.ok(html.includes('class="reg-note"'), 'styled separately from the error region')
+  assert.ok(html.includes('data.pending'), 'script reacts to the register response pending flag')
+  assert.ok(html.includes('账号需管理员审核启用后方可登录'), 'approval message tells the user to wait')
+  assert.ok(html.includes("getElementById('reg-note').textContent = ''"), 'tab switch clears the note')
+})
+
 test('remember-username is an opt-in checkbox, gated on the checked state', () => {
   const html = renderLoginPage({ hasUsers: true })
   assert.ok(html.includes('type="checkbox" id="login-remember" checked'), 'checkbox defaults to checked')
