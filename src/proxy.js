@@ -80,6 +80,11 @@ function createProxy(upstream, getAuthenticatedUrl) {
     headers['x-forwarded-proto'] = 'https'
     headers['x-forwarded-host'] = req.headers.host || ''
     if (dshCookie) headers.cookie = dshCookie  // patched: all paths carry BrowserAuth cookie
+    // patched: forward the caller's um_session as a header so same-origin
+    // plugins (e.g. dsh-git-server) can resolve the acting user — the cookie
+    // itself is replaced above, so this is the only identity channel through.
+    const umTok = /(?:^|;\s*)um_session=([^;]+)/.exec(String(req.headers.cookie || ''))
+    if (umTok) headers['x-um-session'] = decodeURIComponent(umTok[1])
     return headers
   }
 
