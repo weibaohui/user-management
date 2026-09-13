@@ -245,6 +245,16 @@ function createGateway(options) {
       return proxy.handleRequest(req, res)
     }
 
+    // /manifest.webmanifest + /favicon.svg — PWA metadata referenced by the
+    // SPA's index.html <link rel="manifest">. Chrome fetches the manifest
+    // WITHOUT credentials (the link carries no crossorigin="use-credentials"),
+    // so the auth gate 401s it even for logged-in users ("Manifest fetch from
+    // ... failed, code 401"). Static, no secrets — proxy publicly. IP bans
+    // already enforced above (the decider ran).
+    if (path === '/manifest.webmanifest' || path === '/favicon.svg') {
+      return proxy.handleRequest(req, res)
+    }
+
     // Everything else (the SPA, dsh /api, static) is proxied to the loopback
     // dsh webserver — but only past the auth gate.
     if (decision.action === 'allow') {

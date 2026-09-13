@@ -152,6 +152,15 @@ test('gateway-core: Host allow-list, login flow, unauth 302/401, proxy passthrou
     assert.equal(pluginBundle.status, 200)
     assert.equal(await pluginBundle.text(), 'inner:/plugins/@deepseek-ai/dsh-client-ui-workflow-run/client.js')
 
+    // /manifest.webmanifest + /favicon.svg (PWA metadata) are public too —
+    // Chrome fetches the manifest WITHOUT credentials, so the gate must not
+    // 401 it ("Manifest fetch ... failed, code 401" console spam).
+    const manifest = await fetch(`${base}/manifest.webmanifest`)
+    assert.equal(manifest.status, 200)
+    assert.equal(await manifest.text(), 'inner:/manifest.webmanifest')
+    const favicon = await fetch(`${base}/favicon.svg`)
+    assert.equal(favicon.status, 200)
+
     // register the first admin → session cookie
     const reg = await fetch(`${base}/user-management/api/register`, {
       method: 'POST',
