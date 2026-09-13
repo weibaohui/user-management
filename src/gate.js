@@ -133,7 +133,7 @@ function sendForbidden(res, message) {
   res.end(JSON.stringify({ error: message || 'forbidden' }))
 }
 
-module.exports = {
+export {
   SESSION_COOKIE,
   LOGIN_PAGE_PATH,
   API_PREFIX,

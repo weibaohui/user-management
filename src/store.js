@@ -14,12 +14,13 @@
  * per-file write chains so concurrent requests cannot interleave writes.
  */
 
-const fsP = require('node:fs/promises')
-const net = require('node:net')
-const { randomBytes, scrypt: scryptCb, timingSafeEqual, createHash } = require('node:crypto')
-const { promisify } = require('node:util')
-const { join } = require('node:path')
-const { generateSecret, verifyTotp } = require('./totp')
+import fsP from 'node:fs/promises'
+import net from 'node:net'
+import { randomBytes, scrypt as scryptCb, scryptSync, timingSafeEqual, createHash } from 'node:crypto'
+import { promisify } from 'node:util'
+import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { generateSecret, verifyTotp } from './totp.js'
 
 const scrypt = promisify(scryptCb)
 
@@ -54,7 +55,7 @@ class StoreError extends Error {
 
 /** dsh data root — mirrors the host ($DSH_HOME, default ~/.dsh). */
 function dshHome() {
-  return process.env.DSH_HOME ? require('node:path').resolve(process.env.DSH_HOME) : join(require('node:os').homedir(), '.dsh')
+  return process.env.DSH_HOME ? resolve(process.env.DSH_HOME) : join(homedir(), '.dsh')
 }
 
 function isValidUsername(name) {
@@ -74,7 +75,6 @@ async function hashPassword(password, salt) {
 /** Constant-time password check against a stored {salt, passHash} record. */
 function verifyPassword(record, password) {
   if (!record || !record.salt || !record.passHash || typeof password !== 'string') return false
-  const { scryptSync } = require('node:crypto')
   const derived = scryptSync(password, record.salt, KEY_LEN, { N: SCRYPT_COST, r: 8, p: 1 })
   const expected = Buffer.from(record.passHash, 'hex')
   if (derived.length !== expected.length) return false
@@ -633,7 +633,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
   }
 }
 
-module.exports = {
+export {
   createStore,
   dshHome,
   isValidUsername,

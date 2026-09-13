@@ -7,12 +7,10 @@ import http from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
-const totp = require('../src/totp.js')
-const { createStore } = require('../src/store.js')
-const plugin = require('../src/index.js')
+const totp = await import('../src/totp.js')
+const { createStore } = await import('../src/store.js')
+const plugin = (await import('../src/index.js')).default
 const { handleApi, createOtpGuard, totpQrSvg } = plugin.__internals
 
 // ── crypto core ─────────────────────────────────────────────────────────────

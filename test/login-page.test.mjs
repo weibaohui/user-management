@@ -1,10 +1,8 @@
 // Login page contract: per-form error targets, native password length gate.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
-const { renderLoginPage } = require('../src/login-page.js')
+const { renderLoginPage } = await import('../src/login-page.js')
 
 test('login page renders both tabs with per-form error regions', () => {
   const html = renderLoginPage({ hasUsers: true })

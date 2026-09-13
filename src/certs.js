@@ -15,9 +15,9 @@
  * not the CN) accept the self-signed certificate for each configured name.
  */
 
-const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs')
-const { join } = require('node:path')
-const selfsigned = require('selfsigned')
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import selfsigned from 'selfsigned'
 
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
 // IPv6 literal: hex digits + colons only, and must contain at least one colon
@@ -86,4 +86,4 @@ function sanEntries(hosts, primary) {
   })
 }
 
-module.exports = { loadOrCreateSiteCert, sanEntries }
+export { loadOrCreateSiteCert, sanEntries }

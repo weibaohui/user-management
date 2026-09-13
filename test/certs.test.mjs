@@ -3,11 +3,10 @@
 // with stubs — no real network needed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
-const { sanEntries } = require('../src/certs.js')
-const { allLocalIPs } = require('../src/index.js').__internals
+const { sanEntries } = await import('../src/certs.js')
+const internals = (await import('../src/index.js')).default.__internals
+const { allLocalIPs, autoSiteHosts } = internals
 
 test('sanEntries: IPv4 -> type 7, IPv6 -> type 7, hostname -> type 2', () => {
   const out = sanEntries(['100.79.247.70', 'fd7a:115c:a1e0::a73a:f747', 'dsh.example.com', 'localhost'], 'localhost')
@@ -63,7 +62,7 @@ test('allLocalIPs: empty/loopback-only interfaces -> []', () => {
 // ── auto-sites: sslip.io / nip.io SAN aliases ─────────────────────────────
 
 test('autoSiteHosts: localhost + every IP + its sslip.io/nip.io aliases', () => {
-  const { autoSiteHosts } = require('../src/index.js').__internals
+  const { autoSiteHosts } = internals
   const hosts = autoSiteHosts(['100.79.247.70', 'fd7a:115c:a1e0::1'])
   assert.deepEqual(hosts, [
     'localhost',
@@ -79,8 +78,6 @@ test('autoSiteHosts: localhost + every IP + its sslip.io/nip.io aliases', () => 
 
 // SAN coverage of the auto-site list: every host must land in the SAN set
 test('generated cert SAN covers the sslip.io/nip.io aliases', () => {
-  const { sanEntries } = require('../src/certs.js')
-  const { autoSiteHosts } = require('../src/index.js').__internals
   const hosts = autoSiteHosts(['100.79.247.70'])
   const out = sanEntries(hosts, 'localhost')
   const names = out.map((e) => e.ip || e.value)

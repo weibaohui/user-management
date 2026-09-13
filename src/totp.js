@@ -13,7 +13,7 @@
  * on the user record and rejecting counters ≤ the last used one.
  */
 
-const { createHmac, randomBytes, timingSafeEqual } = require('node:crypto')
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 const OTP_STEP_SECONDS = 30
@@ -121,7 +121,7 @@ function otpauthUri({ username, secret, issuer = 'DSH' }) {
   return `otpauth://totp/${label}?${params.toString()}`
 }
 
-module.exports = {
+export {
   OTP_STEP_SECONDS,
   OTP_DIGITS,
   OTP_WINDOW,
