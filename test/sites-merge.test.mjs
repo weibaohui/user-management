@@ -4,11 +4,9 @@
 // (autoIps is a parameter — no real network needed).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
-const { resolveSites } = require('../src/index.js').__internals
-const { sanEntries } = require('../src/certs.js')
+const { resolveSites } = (await import('../src/index.js')).default.__internals
+const { sanEntries } = await import('../src/certs.js')
 
 // A representative local NIC set: one LAN IPv4, one Tailscale IPv4, one
 // non-link-local IPv6. allLocalIPs would return exactly these.

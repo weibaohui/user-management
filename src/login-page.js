@@ -181,4 +181,4 @@ function renderLoginPage({ hasUsers, title = 'DSH 控制台' } = {}) {
     '</body>\n</html>\n'
 }
 
-module.exports = { renderLoginPage }
+export { renderLoginPage }

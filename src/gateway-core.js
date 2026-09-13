@@ -18,12 +18,12 @@
  * standalone.
  */
 
-const { createServer: createHttpsServer } = require('node:https')
-const { createSecureContext } = require('node:tls')
-const { X509Certificate } = require('node:crypto')
-const { createProxy } = require('./proxy')
-const { loadOrCreateSiteCert } = require('./certs')
-const {
+import { createServer as createHttpsServer } from 'node:https'
+import { createSecureContext } from 'node:tls'
+import { X509Certificate } from 'node:crypto'
+import { createProxy } from './proxy.js'
+import { loadOrCreateSiteCert } from './certs.js'
+import {
   SESSION_COOKIE,
   LOGIN_PAGE_PATH,
   API_PREFIX,
@@ -31,7 +31,7 @@ const {
   isAuditableRequest,
   sendUnauthorized,
   sendForbidden,
-} = require('./gate')
+} from './gate.js'
 
 /**
  * Create a gateway from resolved options. Returns { start, stop, port }.
@@ -355,4 +355,4 @@ function createGateway(options) {
   }
 }
 
-module.exports = { createGateway }
+export { createGateway }

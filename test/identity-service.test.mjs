@@ -8,9 +8,10 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
+const { createStore } = await import('../src/store.js')
+const plugin = (await import('../src/index.js')).default
+const { createIdentityService } = plugin.__internals
 
 let home
 
@@ -23,13 +24,11 @@ afterEach(() => {
 })
 
 function makeStore() {
-  const { createStore } = require('../src/store.js')
   const store = createStore({ home })
   return store.load().then(() => store)
 }
 
 function applyWith(config) {
-  const plugin = require('../src/index.js')
   const provided = []
   const disposers = []
   process.env.DSH_HOME = home
@@ -58,8 +57,6 @@ test('resolveRequest maps a live session cookie to the public user', async () =>
   const store = await makeStore()
   const alice = await store.createUser({ username: 'alice', password: 'secret1' })
   const { token } = await store.createSession(store.findUserByUsername('alice'))
-
-  const { createIdentityService } = require('../src/index.js').__internals
   const service = createIdentityService({ store, ready: Promise.resolve() })
   const resolved = await service.resolveRequest({ headers: { cookie: `um_session=${token}; other=x` } })
   assert.equal(resolved.username, 'alice')
@@ -69,7 +66,6 @@ test('resolveRequest maps a live session cookie to the public user', async () =>
 
 test('resolveRequest returns null for anonymous / forged / malformed cookies', async () => {
   const store = await makeStore()
-  const { createIdentityService } = require('../src/index.js').__internals
   const service = createIdentityService({ store, ready: Promise.resolve() })
   assert.equal(await service.resolveRequest({ headers: {} }), null)
   assert.equal(await service.resolveRequest({ headers: { cookie: 'um_session=forged' } }), null)
@@ -82,7 +78,6 @@ test('resolveToken works and disabled users stop resolving', async () => {
   await store.createUser({ username: 'boss', password: 'secret1', role: 'admin' })
   const alice = await store.createUser({ username: 'alice', password: 'secret1' })
   const { token } = await store.createSession(store.findUserByUsername('alice'))
-  const { createIdentityService } = require('../src/index.js').__internals
   const service = createIdentityService({ store, ready: Promise.resolve() })
 
   assert.equal((await service.resolveToken(token)).username, 'alice')

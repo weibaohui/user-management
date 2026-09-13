@@ -9,12 +9,10 @@ import http from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 
 // self-signed certificate on the gateway listener — trust it for the test process
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
-const require = createRequire(import.meta.url)
 const {
   gateDecision,
   createDecider,
@@ -25,11 +23,11 @@ const {
   isPublicPath,
   PUBLIC_PATHS,
 } = await import('../src/gate.js')
-const { createStore, normalizeIp } = require('../src/store.js')
-const plugin = require('../src/index.js')
+const { createStore, normalizeIp } = await import('../src/store.js')
+const plugin = (await import('../src/index.js')).default
 const { handleApi, sessionCookie, clearedCookie } = plugin.__internals
-const { renderLoginPage } = require('../src/login-page.js')
-const { createGateway } = require('../src/gateway-core.js')
+const { renderLoginPage } = await import('../src/login-page.js')
+const { createGateway } = await import('../src/gateway-core.js')
 
 const DOC = { method: 'GET', accept: 'text/html,application/xhtml+xml' }
 const XHR = { method: 'GET', accept: '*/*' }

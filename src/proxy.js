@@ -25,8 +25,8 @@
  * proxy — fully backward compatible.
  */
 
-const http = require('node:http')
-const net = require('node:net')
+import http from 'node:http'
+import net from 'node:net'
 
 /** RFC 7230 hop-by-hop headers, never forwarded. */
 const HOP_BY_HOP = new Set([
@@ -349,4 +349,4 @@ function createProxy(upstream, getAuthenticatedUrl) {
   }
 }
 
-module.exports = { createProxy }
+export { createProxy }

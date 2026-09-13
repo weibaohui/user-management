@@ -42,29 +42,32 @@
  * user-management's store (um_session), NOT dsh-gateway's flat HMAC users.
  */
 
-const { join } = require('node:path')
-const { networkInterfaces } = require('node:os')
-const { request: httpsRequest } = require('node:https')
-const z = require('@deepseek-ai/schemastery')
-const {
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { networkInterfaces } from 'node:os'
+import { request as httpsRequest } from 'node:https'
+import z from '@deepseek-ai/schemastery'
+import {
   createStore,
   dshHome,
   normalizeIp,
   tempPassword,
   StoreError,
   ACTIVITY_LIMIT_DEFAULT,
-} = require('./store')
-const { otpauthUri } = require('./totp')
-const qrCodeFactory = require('./vendor/qrcode-generator')
-const {
+} from './store.js'
+import { otpauthUri } from './totp.js'
+import qrCodeFactory from './vendor/qrcode-generator.js'
+import {
   SESSION_COOKIE,
   API_PREFIX,
   createDecider,
   parseCookies,
   isAuditableRequest,
-} = require('./gate')
-const { renderLoginPage } = require('./login-page')
-const { createGateway } = require('./gateway-core')
+} from './gate.js'
+import { renderLoginPage } from './login-page.js'
+import { createGateway } from './gateway-core.js'
+
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
 const MAX_BODY_BYTES = 64 * 1024
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -774,7 +777,7 @@ const plugin = {
 
     const log = (msg) => console.log(`[${pluginName}] ${msg}`)
     const warn = (msg) => console.warn(`[${pluginName}] ${msg}`)
-    log(`gateway plugin v${require('../package.json').version} starting (pid ${process.pid})`)
+    log(`gateway plugin v${pkg.version} starting (pid ${process.pid})`)
 
     /** The injected webServer service carries the real bound dsh port. */
     const resolveUpstream = (cfg) => {
@@ -1041,7 +1044,7 @@ const plugin = {
         const cfg = resolvedConfig()
         const phase = cfg.enabled === false ? 'disabled' : restarting ? 'restarting' : current ? 'running' : lastError ? 'error' : 'stopped'
         return sendJson(res, 200, {
-          version: require('../package.json').version,
+          version: pkg.version,
           enabled: cfg.enabled !== false,
           phase,
           startedAt,
@@ -1081,4 +1084,4 @@ const plugin = {
   },
 }
 
-module.exports = plugin
+export default plugin

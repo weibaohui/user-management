@@ -5,12 +5,10 @@ import http from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 
-const require = createRequire(import.meta.url)
-const { createStore } = require('../src/store.js')
-const { SESSION_COOKIE, parseCookies, isAuditableRequest } = require('../src/gate.js')
-const plugin = require('../src/index.js')
+const { createStore } = await import('../src/store.js')
+const { SESSION_COOKIE, parseCookies, isAuditableRequest } = await import('../src/gate.js')
+const plugin = (await import('../src/index.js')).default
 const { handleApi } = plugin.__internals
 
 let home, store, server, port, deps
