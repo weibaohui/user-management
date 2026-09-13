@@ -269,39 +269,72 @@ function createProxy(upstream, getAuthenticatedUrl) {
     proxyPlain(req, res)
   }
 
-  /** Proxy one WebSocket (or other protocol) upgrade. */
-  function handleUpgrade(req, socket, head) {
-    const upstreamSocket = net.connect(port, host, () => {
-      // Keep Connection/Upgrade (they make this an upgrade request upstream)
-      // while stripping the rest of the hop-by-hop set.
-      const headers = {}
-      for (const [name, value] of Object.entries(forwardHeaders(req))) {
-        headers[name] = value
-      }
-      headers.connection = req.headers.connection || 'Upgrade'
-      headers.upgrade = req.headers.upgrade || 'websocket'
-      let line = `${req.method} ${req.url} HTTP/1.1\r\n`
-      for (const [name, value] of Object.entries(headers)) {
-        line += `${name}: ${value}\r\n`
-      }
-      line += '\r\n'
-      upstreamSocket.write(line)
-      if (head && head.length > 0) upstreamSocket.write(head)
-      // Both directions are raw from here: the upstream's real handshake
-      // response (e.g. 101 + Sec-WebSocket-Accept) flows through verbatim.
-      upstreamSocket.pipe(socket)
-      socket.pipe(upstreamSocket)
-    })
-    upstreamSocket.on('error', () => {
-      if (!socket.destroyed) {
-        socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
-      }
-    })
-    upstreamSocket.on('close', () => {
+  /** Build the raw HTTP/1.1 upgrade request line + headers for upstream. */
+  const buildUpgradeRequest = (req) => {
+    const headers = {}
+    for (const [name, value] of Object.entries(forwardHeaders(req))) {
+      headers[name] = value
+    }
+    headers.connection = req.headers.connection || 'Upgrade'
+    headers.upgrade = req.headers.upgrade || 'websocket'
+    let line = `${req.method} ${req.url} HTTP/1.1\r\n`
+    for (const [name, value] of Object.entries(headers)) {
+      line += `${name}: ${value}\r\n`
+    }
+    line += '\r\n'
+    return line
+  }
+
+  /**
+   * Proxy one WebSocket (or other protocol) upgrade. Ensures the dsh
+   * BrowserAuth cookie is minted before forwarding (the HTTP path does
+   * this in handleRequest; without it dsh 0.1.2-rc.1+ rejects the upgrade
+   * at the BrowserAuth fence — "Remote stream WebSocket closed"). If the
+   * upstream rejects the upgrade (non-101, e.g. cookie expired after a
+   * dsh restart), refreshes the cookie and retries once — mirrors the
+   * HTTP 401-retry in handleIndexRequest.
+   */
+  function handleUpgrade(req, socket, head, attempts) {
+    attempts = attempts || 0
+    ensureDshCookie().then(() => {
+      const upstreamSocket = net.connect(port, host, () => {
+        upstreamSocket.write(buildUpgradeRequest(req))
+        if (head && head.length > 0) upstreamSocket.write(head)
+      })
+      // Peek at the upstream's first response line: 101 = upgrade accepted,
+      // anything else (401/403/500) = rejected, likely an expired cookie.
+      // Refresh + retry once; on second failure destroy so the browser
+      // reconnects (HTTP traffic will have re-minted by then).
+      let upgraded = false
+      upstreamSocket.once('data', (chunk) => {
+        const statusLine = chunk.toString('utf8', 0, Math.min(chunk.length, 64)).split('\r\n')[0]
+        if (statusLine.includes(' 101 ')) {
+          upgraded = true
+          socket.write(chunk)
+          upstreamSocket.pipe(socket)
+          socket.pipe(upstreamSocket)
+        } else if (attempts < 1) {
+          upstreamSocket.destroy()
+          dshCookie = null
+          refreshDshCookie().then(() => handleUpgrade(req, socket, head, attempts + 1))
+        } else {
+          upstreamSocket.destroy()
+          if (!socket.destroyed) socket.destroy()
+        }
+      })
+      upstreamSocket.on('error', () => {
+        if (!upgraded && !socket.destroyed) {
+          socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+        }
+      })
+      upstreamSocket.on('close', () => {
+        if (!upgraded && !socket.destroyed) socket.destroy()
+      })
+      socket.on('error', () => upstreamSocket.destroy())
+      socket.on('close', () => upstreamSocket.destroy())
+    }).catch(() => {
       if (!socket.destroyed) socket.destroy()
     })
-    socket.on('error', () => upstreamSocket.destroy())
-    socket.on('close', () => upstreamSocket.destroy())
   }
 
   return {
