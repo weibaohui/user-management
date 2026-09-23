@@ -568,6 +568,16 @@ function createStore({ home, now = () => Date.now() } = {}) {
     return run
   }
 
+  /** Drop the entire activity ledger (admin manual cleanup). */
+  async function clearActivity() {
+    const run = writeChain.ledger.then(async () => {
+      ledgerLines = 0
+      await atomicWrite(activityFile, '')
+    })
+    writeChain.ledger = run.catch(() => {})
+    return run
+  }
+
   /**
    * Read ledger entries newest-first. Filters: type (exact), userId, and a
    * set of types (`types`). `limit` caps the scan window from the tail.
@@ -625,7 +635,7 @@ function createStore({ home, now = () => Date.now() } = {}) {
     // ip bans
     isBanned, listBans, banIp, unbanIp,
     // ledger
-    appendActivity, listActivity, appendAudit, listAudit, removeAuditEntry, clearAudit,
+    appendActivity, listActivity, appendAudit, listAudit, removeAuditEntry, clearAudit, clearActivity,
     // internals for tests
     __files: { dir, usersFile, sessionsFile, activityFile, auditFile, bansFile },
     __state: () => ({ users: usersDoc.users, sessions: sessionsDoc.tokens, ledgerLines, auditLines, bans: bansDoc.bans }),

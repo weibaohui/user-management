@@ -101,6 +101,8 @@ window.__ModuleLoader__.load({
       clearLogConfirm: '确定清空全部操作日志？此操作不可恢复。',
       delEntryConfirm: '删除这条操作记录？',
       auditCleared: '操作日志已清空',
+      activityCleared: '记录已清空',
+      clearActivityConfirm: '确定清空全部记录？此操作不可恢复。',
       entryDeleted: '记录已删除',
       actionLogout: '退出登录',
       createUser: '新增用户',
@@ -234,6 +236,8 @@ window.__ModuleLoader__.load({
       clearLogConfirm: 'Clear the entire operation log? This cannot be undone.',
       delEntryConfirm: 'Delete this audit entry?',
       auditCleared: 'Operation log cleared',
+      activityCleared: 'Records cleared',
+      clearActivityConfirm: 'Clear all records? This cannot be undone.',
       entryDeleted: 'Entry deleted',
       actionLogout: 'Sign out',
       createUser: 'New User',
@@ -875,6 +879,13 @@ window.__ModuleLoader__.load({
           .filter((entry) => (kind === 'accessLog' ? entry.type === 'access' : entry.type !== 'access')),
         [entries, username, type, kind])
 
+      const clearAll = () => {
+        if (!window.confirm(t('clearActivityConfirm'))) return
+        api('/activity', { method: 'DELETE' })
+          .then(() => { flash(t('activityCleared')); return load() })
+          .catch((e) => flash(t('failed') + e.message))
+      }
+
       return h('div', { className: 'um-card' },
         h('div', { className: 'um-head', style: { marginBottom: 10 } },
           h('div', { className: 'um-row' },
@@ -883,7 +894,9 @@ window.__ModuleLoader__.load({
               h('option', { value: '' }, t('filterAll')),
               Object.entries(TYPE_LABELS).filter(([key]) => key !== 'access').map(([key, labelKey]) =>
                 h('option', { key, value: key }, t(labelKey))))),
-          h('button', { className: 'um-btn', onClick: load }, t('reload'))),
+          h('div', { className: 'um-row' },
+            h('button', { className: 'um-btn', onClick: load }, t('reload')),
+            h('button', { className: 'um-btn um-btn-danger', disabled: !entries || entries.length === 0, onClick: clearAll }, t('clearLog')))),
         entries === null
           ? h('div', { className: 'um-muted' }, t('loading'))
           : visible.length === 0
