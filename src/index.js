@@ -401,6 +401,13 @@ async function handleApi(req, res, deps) {
     return sendJson(res, 200, { ok: true })
   }
 
+  if (apiPath === '/activity' && method === 'DELETE') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    await store.clearActivity()
+    return sendJson(res, 200, { ok: true })
+  }
+
   const auditDeleteMatch = /^\/audit\/([A-Za-z0-9_-]+)$/.exec(apiPath)
   if (auditDeleteMatch && method === 'DELETE') {
     const admin = await requireAdmin()
