@@ -44,9 +44,23 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { networkInterfaces } from 'node:os'
+import { networkInterfaces, homedir } from 'node:os'
 import { request as httpsRequest } from 'node:https'
-import z from '@deepseek-ai/schemastery'
+import { createRequire } from 'node:module'
+// 0.1.7：从宿主 dsh 全局安装的 vendored 副本同步加载 schemastery（与
+// dsh-git-server / dsh-webdav-server 同源），使本插件可 link 安装而不依赖
+// profile node_modules 的 bare-specifier 解析。加载失败时 z 为 null，Config
+// 退化为 null（插件仍可运行，仅设置 UI 缺席）。
+const __require = createRequire(import.meta.url)
+function __loadSchema() {
+  for (const prefix of [process.env.DSH_GLOBAL_PREFIX, homedir() + '/.local'].filter(Boolean)) {
+    const target = join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'schemastery', 'lib', 'index.cjs')
+    try { return __require(target) } catch {}
+  }
+  try { return __require('@deepseek-ai/schemastery') } catch {}
+  return null
+}
+const z = __loadSchema()
 import {
   createStore,
   dshHome,
@@ -568,14 +582,14 @@ async function handleApi(req, res, deps) {
 }
 
 // ── schemastery config (the `user-management:` settings namespace) ──────────
-const Config = z.object({
-  enabled: z.boolean().default(true),
+const Config = z && typeof z.object === 'function' ? z.object({
+  enabled: z.boolean().default(true).volatile(),
   // Registration approval switch: false (default) puts every self-registered
   // account (first admin excepted) into the disabled state until an admin
   // enables it from the users table; true activates registrations immediately.
-  autoActivate: z.boolean().default(false),
-  listenHost: z.string().default('0.0.0.0'),
-  port: z.natural().min(1).max(65535).default(19843),
+  autoActivate: z.boolean().default(false).volatile(),
+  listenHost: z.string().default('0.0.0.0').volatile(),
+  port: z.natural().min(1).max(65535).default(19843).volatile(),
   sites: z
     .array(
       z.object({
@@ -584,16 +598,17 @@ const Config = z.object({
         key: z.string().default(''),
       }),
     )
-    .default([]), // empty = auto-enumerate all local IPs (see allLocalIPs)
-  title: z.string().default('DSH 控制台'),
+    .default([]) // empty = auto-enumerate all local IPs (see allLocalIPs)
+    .volatile(),
+  title: z.string().default('DSH 控制台').volatile(),
   // Reserved (accepted, not wired): the store owns session lifetime, login
   // failure is not auto-locked (admins set IP bans instead), and handleApi
   // owns its own body-size cap. Kept for the settings card + forward use.
-  sessionDays: z.natural().min(1).default(7),
-  loginFailLimit: z.natural().min(1).default(5),
-  lockoutSeconds: z.natural().min(1).default(60),
-  maxBodyBytes: z.natural().min(1024).default(16384),
-})
+  sessionDays: z.natural().min(1).default(7).volatile(),
+  loginFailLimit: z.natural().min(1).default(5).volatile(),
+  lockoutSeconds: z.natural().min(1).default(60).volatile(),
+  maxBodyBytes: z.natural().min(1024).default(16384).volatile(),
+}) : null
 
 /**
  * Enumerate every non-loopback local IP (IPv4 + IPv6, including Tailscale):
@@ -863,7 +878,7 @@ const plugin = {
     }
 
     // ── gateway lifecycle: hot-reload (bind-then-swap) + self-heal ────────
-    let settingsScope = null
+    let liveSettings = {} // 0.1.7：settings 文档里的实时 volatile 值（事件驱动刷新）
     let current = null
     let currentOptions = null
     let startedAt = null
@@ -871,7 +886,18 @@ const plugin = {
     let lastOnErrorAt = 0
     let restarting = false
     let rebuildChain = Promise.resolve()
-    const resolvedConfig = () => (settingsScope ? settingsScope.get() : config)
+    const resolvedConfig = () => ({ ...config, ...liveSettings })
+    // 0.1.7：读取本命名空间在 settings 文档里的实时值（describe 投影后的 volatile
+    // 字段）。settings 服务缺席时返回 {}，resolvedConfig 退回 composition config。
+    const readLiveSettings = () => {
+      try {
+        if (!ctx.settings || typeof ctx.settings.describe !== 'function') return {}
+        const d = ctx.settings.describe().find((x) => x.ns === 'user-management')
+        return d && d.value ? d.value : {}
+      } catch {
+        return {}
+      }
+    }
     // Registration approval switch, read per request so settings hot-reload applies.
     deps.autoActivate = () => resolvedConfig().autoActivate === true
 
@@ -1064,16 +1090,23 @@ const plugin = {
       },
     }), `${pluginName}: panel route`)
 
-    // ── settings namespace: hot-reload on every committed change ────────────
+    // ── settings namespace: 0.1.7 起通过导出 Config 自动注册；这里订阅文档
+    //    更新事件刷新缓存 + 热重建（替代旧的 scope.settings.register + watch）。
     if (typeof ctx.inject === 'function') {
-      ctx.inject(['settings'], (scope) => {
+      ctx.inject(['settings'], () => {
         try {
-          const registration = scope.settings.register('user-management', Config, { base: config })
-          settingsScope = registration
-          registration.watch(() => { void queueRebuild() })
+          liveSettings = readLiveSettings()
+          ctx.effect(() => {
+            const off = ctx.on('settings/document-updated', (ns) => {
+              if (ns !== 'user-management') return
+              liveSettings = readLiveSettings()
+              void queueRebuild()
+            })
+            return () => { try { off() } catch {} }
+          }, 'user-management: settings watch')
           void queueRebuild()
         } catch (error) {
-          warn(`user-management: settings namespace unavailable, using the composition config only — ${error.message || error}`)
+          warn(`user-management: settings 接线失败，仅使用 composition config — ${error.message || error}`)
           void queueRebuild()
         }
       })
@@ -1091,4 +1124,5 @@ const plugin = {
   },
 }
 
+export { Config }
 export default plugin
