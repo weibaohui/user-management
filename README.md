@@ -5,13 +5,13 @@
 
 **用户管理 + 登录门禁**：自带一个 HTTPS 网关（默认 `https://<本机IP>:19843`）挡在 dsh web 前面——未登录访问任何页面自动跳到登录/注册页，API 与 WebSocket 一律 401；内置管理员/普通用户两级角色，管理员管所有用户（新增、删除、禁用、重置密码、角色调整、IP 封禁、重置两步验证）并查看登录记录、访问记录、操作日志，普通用户只能查看和修改自己的信息。支持 **TOTP 两步验证**（Google Authenticator / 1Password 等验证器 App 扫码绑定，密码之后再加一道动态码）与**注册审批制**（自助注册默认待管理员启用）。
 
-![demo](docs/demo.gif)
+![demo](https://raw.githubusercontent.com/weibaohui/user-management/main/docs/demo.gif)
 
 **两步验证演示**（登录动态码 + 扫码绑定，亮色 / 暗色）：
 
 | 亮色主题 | 暗色主题 |
 |---|---|
-| ![totp-light](docs/demo-totp-light.gif) | ![totp-dark](docs/demo-totp-dark.gif) |
+| ![totp-light](https://raw.githubusercontent.com/weibaohui/user-management/main/docs/demo-totp-light.gif) | ![totp-dark](https://raw.githubusercontent.com/weibaohui/user-management/main/docs/demo-totp-dark.gif) |
 
 ## 核心功能
 
@@ -161,7 +161,7 @@ user-management:
 
 ## 常见问题
 
-忘记管理员密码/用户名、IP 封错解封、证书警告、网关没起来、审计文件清理等常见问题的处理办法见 **[docs/FAQ.md](docs/FAQ.md)**。
+忘记管理员密码/用户名、IP 封错解封、证书警告、网关没起来、审计文件清理等常见问题的处理办法见 **[docs/FAQ.md](https://github.com/weibaohui/user-management/blob/main/docs/FAQ.md)**。
 
 ## 联系我 :飞书群
 
