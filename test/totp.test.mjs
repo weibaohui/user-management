@@ -86,7 +86,7 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true })
+  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
 /** Current valid window codes for a secret — used to pick sure-wrong codes. */

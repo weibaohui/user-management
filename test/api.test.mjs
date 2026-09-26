@@ -62,7 +62,7 @@ beforeEach(async () => {
 afterEach(() => {
   server.close()
   server.closeAllConnections()
-  rmSync(home, { recursive: true, force: true })
+  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
 function call(path, { method = 'GET', body, cookie } = {}) {

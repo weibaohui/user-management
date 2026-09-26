@@ -196,6 +196,6 @@ test('gateway-core: Host allow-list, login flow, unauth 302/401, proxy passthrou
     gw.stop()
     upstream.close()
     upstream.closeAllConnections()
-    rmSync(home, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })

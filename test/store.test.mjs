@@ -10,7 +10,7 @@ const { createStore, MAX_LEDGER_LINES, MAX_AUDIT_LINES, StoreError } = await imp
 let home
 
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'um-store-')) })
-afterEach(() => { rmSync(home, { recursive: true, force: true }) })
+afterEach(() => { rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) })
 
 function makeStore(overrides = {}) {
   return createStore({ home, ...overrides })
