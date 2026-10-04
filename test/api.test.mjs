@@ -59,10 +59,23 @@ beforeEach(async () => {
   port = server.address().port
 })
 
-afterEach(() => {
+afterEach(async () => {
   server.close()
   server.closeAllConnections()
-  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  // 审计 appendAudit 是响应 finish 后的 fire-and-forget 落盘——慢机上会在
+  // rimraf 遍历之后才写完（0277153 的 maxRetries 曾在 CI 被击穿一次），
+  // 这里放宽到 ~5s 逐次重试，只容忍 ENOTEMPTY/EBUSY 这类竞态错误。
+  const attempt = () => {
+    try {
+      rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      return true
+    } catch (error) {
+      if (error.code !== 'ENOTEMPTY' && error.code !== 'EBUSY') throw error
+      return false
+    }
+  }
+  for (let i = 0; i < 50 && !attempt(); i++) await new Promise((resolve) => setTimeout(resolve, 100))
+  attempt()
 })
 
 function call(path, { method = 'GET', body, cookie } = {}) {
