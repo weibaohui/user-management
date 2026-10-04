@@ -56,6 +56,11 @@ function createGateway(options) {
     hosts: (site.hosts || []).map((h) => String(h).toLowerCase()),
     cert: site.cert || '',
     key: site.key || '',
+    // UI-provenance passthrough (custom cert store / settings file paths);
+    // resolved against certs.js's auto flag into a display origin below.
+    id: site.id || '',
+    name: site.name || '',
+    origin: site.origin || '',
   }))
   if (sites.length === 0) sites.push({ hosts: [], cert: '', key: '' })
 
@@ -66,12 +71,18 @@ function createGateway(options) {
   }
 
   const contexts = sites.map((site) => {
-    const { cert, key } = loadOrCreateSiteCert(site, options.certsDir, log)
+    const { cert, key, auto, certPath } = loadOrCreateSiteCert(site, options.certsDir, log)
     return {
       hosts: site.hosts,
       context: createSecureContext({ cert, key }),
       certPem: cert,
       keyPem: key,
+      id: site.id,
+      name: site.name,
+      certPath: certPath || '',
+      // 'custom'/'settings' win (declared provenance); a site that carries
+      // file paths but no tag defaults to 'settings', else it was generated.
+      origin: site.origin || (site.cert && site.key ? 'settings' : auto ? 'auto' : 'settings'),
     }
   })
   const defaultSite = contexts[0]
@@ -351,6 +362,32 @@ function createGateway(options) {
     /** SHA-256 fingerprint of the certificate presented when no SNI name matches. */
     defaultCertFingerprint() {
       try { return new X509Certificate(defaultSite.certPem).fingerprint256 } catch { return '' }
+    },
+    /** Per-SNI-site certificate details for the management UI: origin tag,
+     *  covered hosts and parsed cert material (no private key material). */
+    describeSites() {
+      return contexts.map((entry) => {
+        let parsed = {}
+        try {
+          const x509 = new X509Certificate(entry.certPem)
+          parsed = {
+            fingerprint: x509.fingerprint256,
+            notBefore: x509.validFrom,
+            notAfter: x509.validTo,
+            subject: x509.subject,
+            subjectAltName: x509.subjectAltName || '',
+          }
+        } catch { /* malformed cert — hosts/origin still describe the site */ }
+        return {
+          id: entry.id,
+          name: entry.name,
+          origin: entry.origin,
+          hosts: [...entry.hosts],
+          certPath: entry.certPath,
+          isDefault: entry === defaultSite,
+          ...parsed,
+        }
+      })
     },
   }
 }

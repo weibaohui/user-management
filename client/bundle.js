@@ -178,6 +178,55 @@ window.__ModuleLoader__.load({
       totpResetDone: '两步验证已重置',
       totpBadge: '两步',
       userCount: '{n} 个用户',
+      tabGateway: '网关',
+      gwUnavailable: '无法连接网关管理接口。',
+      gwMismatch: '网关管理接口未就绪（404）。刚更新过插件的话，重启 dsh web 即可。',
+      gwStatusTitle: '网关状态',
+      gwVersion: '版本',
+      gwPhase: '状态',
+      gwPhaseRunning: '运行中',
+      gwPhaseRestarting: '重启中',
+      gwPhaseStopped: '已停止',
+      gwPhaseError: '异常',
+      gwPhaseDisabled: '已禁用',
+      gwListen: '监听',
+      gwUpstream: '上游',
+      gwStartedAt: '启动时间',
+      gwLastErr: '最近错误',
+      gwCertsTitle: '证书',
+      gwSourceCol: '来源',
+      gwOriginAuto: '自动生成',
+      gwOriginSettings: '文件路径',
+      gwOriginCustom: '本页添加',
+      gwCertPath: '文件',
+      gwValidRange: '有效期',
+      gwRegen: '重新生成自签证书',
+      gwRegenConfirm: '删除并重新生成自签证书？重启后指纹会变化，已导入信任链的设备需要重新导入。',
+      gwRegenDone: '已重新生成，网关重启中…',
+      gwAddCert: '添加证书',
+      gwAddCertTitle: '添加证书',
+      gwCertName: '名称（可选）',
+      gwCertHosts: '主机名（每行一个，支持 *.example.com）',
+      gwCertPem: '证书 PEM（fullchain）',
+      gwKeyPem: '私钥 PEM（不会保存到界面，仅存服务器）',
+      gwInspect: '检测',
+      gwSaveApply: '保存并应用',
+      gwInspectSubject: '主题',
+      gwInspectSan: '覆盖名称（SAN）',
+      gwMatchOk: '密钥匹配',
+      gwExpired: '已过期',
+      gwSaved: '证书已保存，网关重启中…',
+      gwDeleted: '证书已删除，网关重启中…',
+      gwDeleteConfirm: '删除证书 {name}？对应主机名将回落到自签证书。',
+      gwNoCustom: '暂无上传证书（上方「配置文件」来源的站点在 dsh 设置里配置）。',
+      gwUploadedBy: '上传者',
+      gwRestart: '重启网关',
+      gwRestartConfirm: '重启网关监听？约需一秒，在线会话不会掉线。',
+      gwRestartDone: '重启指令已发出',
+      typeGwCertAdd: '添加证书',
+      typeGwCertRemove: '删除证书',
+      typeGwCertRegen: '重签自签证书',
+      typeGwRestart: '重启网关',
     }
 
     const EN = {
@@ -313,6 +362,55 @@ window.__ModuleLoader__.load({
       totpResetDone: 'Two-step verification reset',
       totpBadge: '2FA',
       userCount: '{n} user(s)',
+      tabGateway: 'Gateway',
+      gwUnavailable: 'Could not reach the gateway management API.',
+      gwMismatch: 'Gateway management API not ready (404). If the plugin was just updated, restart dsh web.',
+      gwStatusTitle: 'Gateway Status',
+      gwVersion: 'Version',
+      gwPhase: 'Phase',
+      gwPhaseRunning: 'Running',
+      gwPhaseRestarting: 'Restarting',
+      gwPhaseStopped: 'Stopped',
+      gwPhaseError: 'Error',
+      gwPhaseDisabled: 'Disabled',
+      gwListen: 'Listen',
+      gwUpstream: 'Upstream',
+      gwStartedAt: 'Started',
+      gwLastErr: 'Last error',
+      gwCertsTitle: 'Certificates',
+      gwSourceCol: 'Source',
+      gwOriginAuto: 'Auto-generated',
+      gwOriginSettings: 'From settings',
+      gwOriginCustom: 'Added here',
+      gwCertPath: 'Files',
+      gwValidRange: 'Validity',
+      gwRegen: 'Regenerate Self-Signed',
+      gwRegenConfirm: 'Delete and regenerate the self-signed certificate? The fingerprint changes on restart — devices that imported it must re-import.',
+      gwRegenDone: 'Regenerated — gateway restarting…',
+      gwAddCert: 'Add Certificate',
+      gwAddCertTitle: 'Add Certificate',
+      gwCertName: 'Name (optional)',
+      gwCertHosts: 'Hostnames (one per line, *.example.com allowed)',
+      gwCertPem: 'Certificate PEM (fullchain)',
+      gwKeyPem: 'Private key PEM (stored on the server only, never shown again)',
+      gwInspect: 'Inspect',
+      gwSaveApply: 'Save & Apply',
+      gwInspectSubject: 'Subject',
+      gwInspectSan: 'Covered names (SAN)',
+      gwMatchOk: 'Key matched',
+      gwExpired: 'Expired',
+      gwSaved: 'Certificate saved — gateway restarting…',
+      gwDeleted: 'Certificate removed — gateway restarting…',
+      gwDeleteConfirm: 'Remove certificate {name}? Its hostnames fall back to the self-signed certificate.',
+      gwNoCustom: 'No uploaded certificates ("From settings" sites are configured in the dsh settings document).',
+      gwUploadedBy: 'Uploaded by',
+      gwRestart: 'Restart Gateway',
+      gwRestartConfirm: 'Restart the gateway listener? Takes about a second; live sessions stay signed in.',
+      gwRestartDone: 'Restart requested',
+      typeGwCertAdd: 'Certificate added',
+      typeGwCertRemove: 'Certificate removed',
+      typeGwCertRegen: 'Self-signed regenerated',
+      typeGwRestart: 'Gateway restarted',
     }
 
     /** Ledger event type → locale key (also the login-log type filter). */
@@ -334,6 +432,10 @@ window.__ModuleLoader__.load({
       totp_enabled: 'typeTotpEnabled',
       totp_disabled: 'typeTotpDisabled',
       totp_reset: 'typeTotpReset',
+      gateway_cert_add: 'typeGwCertAdd',
+      gateway_cert_remove: 'typeGwCertRemove',
+      gateway_cert_regen: 'typeGwCertRegen',
+      gateway_restart: 'typeGwRestart',
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -456,6 +558,8 @@ window.__ModuleLoader__.load({
     .um-badge-err { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
     .um-input { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border-radius: 7px; padding: 5px 9px; font-size: 12px; outline: none; }
     .um-input:focus { border-color: var(--dsw-alias-state-business-primary); }
+    .um-textarea { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); border-radius: 7px; padding: 6px 9px; font-size: 12px; outline: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%; box-sizing: border-box; resize: vertical; }
+    .um-textarea:focus { border-color: var(--dsw-alias-state-business-primary); }
     .um-form { display: flex; flex-direction: column; gap: 8px; max-width: 340px; }
     .um-form label { font-size: 12px; color: var(--dsw-alias-label-secondary); }
     .um-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1247,6 +1351,246 @@ window.__ModuleLoader__.load({
           err && h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: 12 } }, err)))
     }
 
+    // ── gateway management (admin): status + certificates ─────────────────────
+
+    const GATEWAY_PHASES = ['running', 'restarting', 'stopped', 'error', 'disabled']
+
+    function phaseBadgeClass(phase) {
+      if (phase === 'running') return 'um-badge um-badge-ok'
+      if (phase === 'error') return 'um-badge um-badge-err'
+      return 'um-badge'
+    }
+
+    function phaseLabelKey(phase) {
+      const key = { running: 'gwPhaseRunning', restarting: 'gwPhaseRestarting', stopped: 'gwPhaseStopped', error: 'gwPhaseError', disabled: 'gwPhaseDisabled' }
+      return key[GATEWAY_PHASES.includes(phase) ? phase : 'stopped']
+    }
+
+    /** "DNS:a.com, DNS:*.b.com, IP Address:1.2.3.4" → the DNS entries only. */
+    function sansFromAltName(alt) {
+      return String(alt || '')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.startsWith('DNS:'))
+        .map((entry) => entry.slice(4).trim())
+        .filter(Boolean)
+    }
+
+    /** One line in the certificate table: a live SNI site or a stored upload. */
+    function CertRow({ row, __t: t, flash, onAction, busy }) {
+      const [copied, setCopied] = useState(false)
+      const copyFp = () => {
+        try {
+          navigator.clipboard.writeText(row.fingerprint).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) }, () => {})
+        } catch { /* clipboard unavailable */ }
+      }
+      return h('tr', null,
+        h('td', null, h('div', { className: 'um-row', style: { gap: 4 } },
+          h('span', { className: 'um-badge' }, t(row.origin === 'auto' ? 'gwOriginAuto' : row.origin === 'custom' ? 'gwOriginCustom' : 'gwOriginSettings')),
+          row.expired ? h('span', { className: 'um-badge um-badge-err' }, t('gwExpired')) : null)),
+        h('td', null,
+          row.name ? h('div', { style: { fontWeight: 600 } }, row.name) : null,
+          h('div', { className: 'um-row', style: { gap: 4 } }, (row.hosts || []).map((hostName) =>
+            h('span', { key: hostName, className: 'um-badge' }, hostName)))),
+        h('td', { className: 'um-muted', style: { whiteSpace: 'nowrap' } }, row.notAfter || '-'),
+        h('td', null, h('div', { className: 'um-row', style: { gap: 4 } },
+          h('code', { style: { fontSize: 11, wordBreak: 'break-all' }, title: row.fingerprint }, (row.fingerprint || '-').slice(0, 23) + (String(row.fingerprint || '').length > 23 ? '…' : '')),
+          row.fingerprint ? h('button', { className: 'um-btn', style: { padding: '0 7px', fontSize: 11 }, onClick: copyFp }, copied ? t('copied') : t('copy')) : null)),
+        h('td', null, h('div', { className: 'um-row', style: { justifyContent: 'flex-end' } },
+          row.origin === 'auto' && h('button', {
+            className: 'um-btn', disabled: busy,
+            title: t('gwRegenConfirm'),
+            onClick: () => {
+              if (!window.confirm(t('gwRegenConfirm'))) return
+              onAction(() => api('/gateway/certs/regenerate', { method: 'POST' }).then(() => flash(t('gwRegenDone'))))
+            },
+          }, t('gwRegen')),
+          row.origin === 'custom' && row.id && h('button', {
+            className: 'um-btn um-btn-danger', disabled: busy,
+            onClick: () => {
+              if (!window.confirm(interpolate(t('gwDeleteConfirm'), { name: row.name || (row.hosts || [])[0] || row.id }))) return
+              onAction(() => api(`/gateway/certs/${encodeURIComponent(row.id)}`, { method: 'DELETE' }).then(() => flash(t('gwDeleted'))))
+            },
+          }, t('actionDelete')))))
+    }
+
+    /** Gateway status card: phase / listen / upstream / started / last error,
+     *  plus the manual restart. */
+    function GatewayStatusCard({ info, __t: t, flash, reload }) {
+      const [busy, setBusy] = useState(false)
+      const restart = () => {
+        if (!window.confirm(t('gwRestartConfirm'))) return
+        setBusy(true)
+        api('/gateway/restart', { method: 'POST' })
+          .then(() => { flash(t('gwRestartDone')); setTimeout(reload, 1500) })
+          .catch((e) => flash(t('failed') + e.message))
+          .finally(() => setBusy(false))
+      }
+      return h('div', { className: 'um-card' },
+        h('div', { className: 'um-head', style: { marginBottom: 10 } },
+          h('h3', { className: 'um-title' }, t('gwStatusTitle')),
+          h('div', { className: 'um-row' },
+            h('button', { className: 'um-btn', onClick: reload }, t('reload')),
+            h('button', { className: 'um-btn um-btn-danger', disabled: busy, onClick: restart }, t('gwRestart')))),
+        h('dl', { className: 'um-kv' },
+          h('dt', null, t('gwPhase')), h('dd', null, h('span', { className: phaseBadgeClass(info.phase) }, t(phaseLabelKey(info.phase)))),
+          h('dt', null, t('gwVersion')), h('dd', null, info.version || '-'),
+          h('dt', null, t('gwListen')), h('dd', null, `${info.listenHost || '-'}:${info.port || '-'}`),
+          h('dt', null, t('gwUpstream')), h('dd', null, info.upstream || '-'),
+          h('dt', null, t('gwStartedAt')), h('dd', null, formatTime(info.startedAt)),
+          info.lastError ? h('dt', null, t('gwLastErr')) : null,
+          info.lastError ? h('dd', { style: { color: 'var(--dsw-alias-state-error-primary)', wordBreak: 'break-all' } }, info.lastError) : null))
+    }
+
+    /** Certificate table: the live listener's SNI sites (self-signed auto,
+     *  settings-file, uploaded) plus stored uploads not yet live. */
+    function GatewayCertsCard({ info, __t: t, flash, reload, onAdd }) {
+      const [busy, setBusy] = useState(false)
+      const liveIds = new Set((info.sites || []).map((s) => s.id).filter(Boolean))
+      const rows = [
+        ...(info.sites || []).map((site, i) => ({ key: `site-${i}`, ...site })),
+        ...(info.customCerts || [])
+          .filter((cert) => !liveIds.has(cert.id))
+          .map((cert) => ({ key: `cert-${cert.id}`, origin: 'custom', isDefault: false, ...cert })),
+      ]
+      const onAction = (fn) => {
+        setBusy(true)
+        Promise.resolve().then(fn)
+          .catch((e) => flash(t('failed') + e.message))
+          .finally(() => { setBusy(false); setTimeout(reload, 1500) })
+      }
+      return h('div', { className: 'um-card' },
+        h('div', { className: 'um-head', style: { marginBottom: 10 } },
+          h('h3', { className: 'um-title' }, t('gwCertsTitle')),
+          h('div', { className: 'um-row' },
+            h('button', { className: 'um-btn um-btn-primary', onClick: onAdd }, t('gwAddCert')))),
+        rows.length === 0
+          ? h('div', { className: 'um-empty' }, t('gwNoCustom'))
+          : h('div', { className: 'um-table-wrap' },
+            h('table', { className: 'um-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, t('gwSourceCol')),
+                h('th', null, t('certHosts')),
+                h('th', null, t('certValid')),
+                h('th', null, t('certFingerprint')),
+                h('th', null, ''))),
+              h('tbody', null, rows.map((row) => h(CertRow, { key: row.key, row, __t: t, flash, onAction, busy }))))),
+        info.phase === 'restarting' ? h('p', { className: 'um-muted', style: { margin: '8px 0 0' } }, t('gwPhaseRestarting') + '…') : null)
+    }
+
+    /** Add-certificate dialog: paste PEM pair → inspect (server-side dry run:
+     *  parse, key-match, SAN list) → save & apply (persists under
+     *  certs/custom/ and restarts the listener). */
+    function AddCertDialog({ onClose, __t: t, flash, reload }) {
+      const [form, setForm] = useState({ name: '', hosts: '', cert: '', key: '' })
+      const [inspect, setInspect] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [err, setErr] = useState('')
+
+      const payload = () => ({
+        name: String(form.name || '').trim(),
+        hosts: String(form.hosts || '').split('\n').map((line) => line.trim()).filter(Boolean),
+        cert: String(form.cert || '').trim(),
+        key: String(form.key || '').trim(),
+      })
+      const setField = (field) => (e) => setForm({ ...form, [field]: e.target.value })
+
+      const runInspect = () => {
+        setBusy(true)
+        setErr('')
+        setInspect(null)
+        api('/gateway/certs', { method: 'POST', body: { ...payload(), dryRun: true } })
+          .then((data) => {
+            setInspect(data.info || {})
+            // Empty hosts field + a cert that declares DNS SANs → prefill them.
+            if (payload().hosts.length === 0) {
+              const sans = sansFromAltName(data.info && data.info.subjectAltName)
+              if (sans.length > 0) setForm((current) => ({ ...current, hosts: sans.join('\n') }))
+            }
+          })
+          .catch((e) => setErr(String(e && e.message)))
+          .finally(() => setBusy(false))
+      }
+
+      const save = () => {
+        setBusy(true)
+        setErr('')
+        api('/gateway/certs', { method: 'POST', body: payload() })
+          .then(() => { flash(t('gwSaved')); onClose(); setTimeout(reload, 1500) })
+          .catch((e) => setErr(String(e && e.message)))
+          .finally(() => setBusy(false))
+      }
+
+      return h(UmDialog, {
+        title: t('gwAddCertTitle'), onClose,
+        footer: [
+          h('button', { className: 'um-btn', onClick: onClose }, '✕'),
+          h('button', { className: 'um-btn', onClick: runInspect, disabled: busy || !form.cert || !form.key }, t('gwInspect')),
+          h('button', { className: 'um-btn um-btn-primary', onClick: save, disabled: busy || !form.cert || !form.key }, t('gwSaveApply')),
+        ],
+      },
+        h('form', { className: 'um-form', style: { maxWidth: 'none' }, onSubmit: (e) => { e.preventDefault(); save() } },
+          h('label', { htmlFor: 'um-gw-name' }, t('gwCertName')),
+          h('input', { id: 'um-gw-name', className: 'um-input', value: form.name, onChange: setField('name') }),
+          h('label', { htmlFor: 'um-gw-hosts' }, t('gwCertHosts')),
+          h('textarea', { id: 'um-gw-hosts', className: 'um-textarea', rows: 3, value: form.hosts, onChange: setField('hosts') }),
+          h('label', { htmlFor: 'um-gw-cert' }, t('gwCertPem')),
+          h('textarea', { id: 'um-gw-cert', className: 'um-textarea', rows: 6, value: form.cert, onChange: setField('cert'), autoComplete: 'off', spellCheck: false }),
+          h('label', { htmlFor: 'um-gw-key' }, t('gwKeyPem')),
+          h('textarea', { id: 'um-gw-key', className: 'um-textarea', rows: 6, value: form.key, onChange: setField('key'), autoComplete: 'off', spellCheck: false }),
+          err && h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: 12, wordBreak: 'break-all' } }, err),
+          inspect && h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 8 } },
+            h('div', { className: 'um-row' },
+              h('span', { className: 'um-badge um-badge-ok' }, t('gwMatchOk')),
+              inspect.expired ? h('span', { className: 'um-badge um-badge-err' }, t('gwExpired')) : null),
+            h('div', { className: 'um-row' }, h('span', { className: 'um-muted', style: { fontSize: 11 } }, `${t('gwInspectSubject')}:`), h('code', { style: { fontSize: 11 } }, inspect.subject || '-')),
+            h('div', null,
+              h('div', { className: 'um-muted', style: { fontSize: 11, marginBottom: 3 } }, t('gwInspectSan')),
+              h('div', { className: 'um-row' }, (sansFromAltName(inspect.subjectAltName).length ? sansFromAltName(inspect.subjectAltName) : ['-']).map((name) =>
+                h('span', { key: name, className: 'um-badge' }, name)))),
+            h('div', { className: 'um-row' },
+              h('span', { className: 'um-muted', style: { fontSize: 11 } }, `${t('certFingerprint')}:`),
+              h('code', { style: { fontSize: 11, wordBreak: 'break-all' } }, inspect.fingerprint || '-')))))
+    }
+
+    /** Admin gateway tab: live status + certificate management.
+     *  info: undefined = loading | 'mismatch' = the gateway answered 404 (its
+     *  process predates this client build, or the page is not served through the
+     *  gateway at all) | 'auth' = 401 (session gone) | null = network failure |
+     *  object = the status payload. The mismatch case gets its own hint — a bare
+     *  "gateway unavailable" would send someone who IS using the gateway down
+     *  the wrong path. */
+    function GatewayTab({ __t: t, flash }) {
+      useEffect(ensureStyles, [])
+      const [info, setInfo] = useState(undefined)
+      const [adding, setAdding] = useState(false)
+
+      const load = () => api('/gateway/status')
+        .then(setInfo)
+        .catch((e) => {
+          const message = String((e && e.message) || '')
+          if (message === 'not found' || /HTTP 404/.test(message)) setInfo('mismatch')
+          else if (message === '未登录' || /HTTP 401/.test(message)) setInfo('auth')
+          else setInfo(null)
+        })
+      useEffect(() => { load() }, [])
+
+      /** Failure card: one factual line + retry — no theories about the user's setup. */
+      const retryCard = (messageKey) => h('div', { className: 'um-card' },
+        h('div', { className: 'um-row', style: { justifyContent: 'space-between', gap: 10 } },
+          h('span', { className: 'um-muted' }, t(messageKey)),
+          h('button', { className: 'um-btn', onClick: () => { setInfo(undefined); load() } }, t('reload'))))
+
+      if (info === 'mismatch') return retryCard('gwMismatch')
+      if (info === 'auth') return h('div', { className: 'um-card um-muted' }, t('notLoggedIn'))
+      if (info === null) return retryCard('gwUnavailable')
+      if (info === undefined || typeof info !== 'object') return h('div', { className: 'um-card um-muted' }, t('loading'))
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } },
+        h(GatewayStatusCard, { info, __t: t, flash, reload: load }),
+        h(GatewayCertsCard, { info, __t: t, flash, reload: load, onAdd: () => setAdding(true) }),
+        adding && h(AddCertDialog, { onClose: () => setAdding(false), __t: t, flash, reload: load }))
+    }
+
     function MyPanel({ me, __t: t, flash }) {
       const [oldPwd, setOldPwd] = useState('')
       const [newPwd, setNewPwd] = useState('')
@@ -1329,7 +1673,7 @@ window.__ModuleLoader__.load({
 
     function AdminPanel({ me, __t: t, flash }) {
       const [tab, setTab] = useState('users')
-      const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')], ['cert', t('certTitle')], ['totp', t('totpTitle')]]
+      const tabs = [['users', t('tabUsers')], ['loginLog', t('tabLoginLog')], ['accessLog', t('tabAccessLog')], ['auditLog', t('tabAuditLog')], ['bans', t('tabBans')], ['cert', t('certTitle')], ['gateway', t('tabGateway')], ['totp', t('totpTitle')]]
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
         h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 } },
           h('div', { className: 'um-tabs' }, tabs.map(([key, label]) =>
@@ -1339,8 +1683,9 @@ window.__ModuleLoader__.load({
           : tab === 'auditLog' ? h(AuditTab, { __t: t, flash })
             : tab === 'bans' ? h(BansTab, { __t: t, flash })
               : tab === 'cert' ? h(CertCard, { __t: t })
-                : tab === 'totp' ? h(TotpCard, { me, __t: t, flash })
-                  : h(ActivityTab, { kind: tab, __t: t, flash }))
+                : tab === 'gateway' ? h(GatewayTab, { __t: t, flash })
+                  : tab === 'totp' ? h(TotpCard, { me, __t: t, flash })
+                    : h(ActivityTab, { kind: tab, __t: t, flash }))
     }
 
     // ── module wiring ─────────────────────────────────────────────────────────
@@ -1354,7 +1699,7 @@ window.__ModuleLoader__.load({
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
       __boot,
-      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection, AdminPanel, TotpCard, TotpSetupDialog, TotpDisableDialog },
+      __internals: { NS, ZH, EN, TYPE_LABELS, api, formatTime, interpolate, filterActivity, filterAudit, avatarHue, UserAvatar, BrandMark, BrandName, canBanIp, BanIpButton, ChangePasswordDialog, UserMenu, CertCard, CERT_INSTALL_COMMANDS, UserManagementSection, AdminPanel, TotpCard, TotpSetupDialog, TotpDisableDialog, GatewayTab, GatewayStatusCard, GatewayCertsCard, AddCertDialog, CertRow, phaseBadgeClass, phaseLabelKey, sansFromAltName },
       apply(ctx) {
         ctx.locale.register(NS, 'zh', ZH)
         ctx.locale.register(NS, 'en', EN)

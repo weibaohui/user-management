@@ -108,14 +108,24 @@ function normalizeIp(raw) {
 /**
  * Create a store rooted at `<home>/user-management`. All state is cached in
  * memory after load; writes persist through serialized atomic replacements.
+ *
+ * `sessionTtlMs` (number or () => number) overrides the 7-day default so the
+ * `sessionDays` setting actually owns session lifetime (evaluated per
+ * create/renew, so setting changes apply to newly issued sessions without a
+ * restart). Existing sessions keep the TTL they were minted with.
  */
-function createStore({ home, now = () => Date.now() } = {}) {
+function createStore({ home, sessionTtlMs, now = () => Date.now() } = {}) {
   const dir = join(home, 'user-management')
   const usersFile = join(dir, USERS_FILE)
   const sessionsFile = join(dir, SESSIONS_FILE)
   const activityFile = join(dir, ACTIVITY_FILE)
   const auditFile = join(dir, AUDIT_FILE)
   const bansFile = join(dir, BANS_FILE)
+
+  const ttlMs = () => {
+    const value = typeof sessionTtlMs === 'function' ? sessionTtlMs() : sessionTtlMs
+    return Number.isFinite(value) && value >= 60_000 ? value : SESSION_TTL_MS
+  }
 
   /** @type {{seq:number, users:Array}} */
   let usersDoc = { seq: 0, users: [] }
@@ -380,9 +390,9 @@ function createStore({ home, now = () => Date.now() } = {}) {
   async function createSession(user) {
     const token = randomToken()
     const ts = now()
-    sessionsDoc.tokens[token] = { userId: user.id, username: user.username, createdAt: ts, expiresAt: ts + SESSION_TTL_MS }
+    sessionsDoc.tokens[token] = { userId: user.id, username: user.username, createdAt: ts, expiresAt: ts + ttlMs() }
     await pruneSessions()
-    return { token, expiresAt: ts + SESSION_TTL_MS }
+    return { token, expiresAt: ts + ttlMs() }
   }
 
   async function pruneSessions() {
@@ -416,8 +426,8 @@ function createStore({ home, now = () => Date.now() } = {}) {
       await persistSessions()
       return null
     }
-    if (session.expiresAt - ts < SESSION_RENEW_MS) {
-      session.expiresAt = ts + SESSION_TTL_MS
+    if (session.expiresAt - ts < ttlMs() / 2) {
+      session.expiresAt = ts + ttlMs()
       await persistSessions()
     }
     return { user, session, token }

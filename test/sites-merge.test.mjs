@@ -95,6 +95,27 @@ test('resolveSites: mix — bare-host site merges, cert site stays independent',
   assert.deepEqual(sites[1], { hosts: ['dsh.example.com'], cert: '/c/fullchain.pem', key: '/c/privkey.pem' })
 })
 
+// ── custom (UI-managed) sites append after auto + settings sites ───────────
+
+test('resolveSites: custom cert-store sites append last (lowest SNI precedence)', () => {
+  const custom = [{ id: 'c_1', origin: 'custom', name: '上传', hosts: ['ui.example.com'], cert: '/x/custom/c_1.crt', key: '/x/custom/c_1.key' }]
+  const sites = resolveSites({
+    sites: [{ hosts: ['dsh.example.com'], cert: '/c/fullchain.pem', key: '/c/privkey.pem' }],
+  }, LOCAL_IPS, custom)
+  assert.equal(sites.length, 3, 'auto + settings domain site + custom')
+  assert.deepEqual(sites[0], { hosts: AUTO_HOSTS, cert: '', key: '' })
+  assert.deepEqual(sites[1], { hosts: ['dsh.example.com'], cert: '/c/fullchain.pem', key: '/c/privkey.pem' })
+  assert.deepEqual(sites[2], custom[0], 'custom site appended verbatim')
+})
+
+test('resolveSites: custom sites work with an otherwise empty config', () => {
+  const custom = [{ id: 'c_2', origin: 'custom', hosts: ['ui.example.com'], cert: '/x/c_2.crt', key: '/x/c_2.key' }]
+  const sites = resolveSites({}, LOCAL_IPS, custom)
+  assert.equal(sites.length, 2)
+  assert.deepEqual(sites[0].hosts, AUTO_HOSTS)
+  assert.equal(sites[1].origin, 'custom')
+})
+
 // ── SAN coverage: the merged hosts land in the self-signed cert SAN ────────
 
 test('SAN covers localhost + localIPs + sslip/nip aliases + configured public IP', () => {

@@ -190,8 +190,8 @@ test('the HTTPS certificate lives in its own tab, right after IP bans', () => {
     for (const kid of node.kids || []) walk(kid)
   }
   walk(el)
-  assert.deepEqual(labels, ['tabUsers', 'tabLoginLog', 'tabAccessLog', 'tabAuditLog', 'tabBans', 'certTitle', 'totpTitle'],
-    'cert tab before bans; totp (self-service) sits last')
+  assert.deepEqual(labels, ['tabUsers', 'tabLoginLog', 'tabAccessLog', 'tabAuditLog', 'tabBans', 'certTitle', 'tabGateway', 'totpTitle'],
+    'cert tab before bans; gateway management follows the cert tab; totp (self-service) sits last')
 })
 
 test('totp card renders both states; dialogs render their inputs', () => {
@@ -223,4 +223,84 @@ test('totp card renders both states; dialogs render their inputs', () => {
   }
   walkPw(disable)
   assert.equal(pwInputs.length, 1, 'disable demands the login password')
+})
+
+test('gateway tab: status card renders phase/listen/upstream; cert table lists sites', () => {
+  const { GatewayStatusCard, GatewayCertsCard, phaseLabelKey, phaseBadgeClass } = plugin.__internals
+  const info = {
+    phase: 'running', version: '9.9.9', listenHost: '0.0.0.0', port: 19843,
+    upstream: 'http://127.0.0.1:3080', startedAt: 1, lastError: '',
+    sites: [{ origin: 'auto', isDefault: true, hosts: ['localhost'], fingerprint: 'AA:BB', notAfter: 'tomorrow' }],
+    customCerts: [{ id: 'c_1', name: '上传', origin: 'custom', hosts: ['ui.example.com'], fingerprint: 'CC:DD', notAfter: 'someday' }],
+  }
+  // component elements don't auto-render under the shim — invoke them
+  const textsOf = (el, out = []) => {
+    if (typeof el === 'string') { out.push(el); return out }
+    if (!el || typeof el !== 'object') return out
+    if (typeof el.type === 'function') return textsOf(el.type(el.props), out)
+    for (const kid of el.kids || []) textsOf(kid, out)
+    return out
+  }
+  const status = GatewayStatusCard({ info, __t: (k) => k, flash: () => {}, reload: () => {} })
+  const statusTexts = textsOf(status)
+  for (const key of ['gwStatusTitle', 'gwPhaseRunning', 'gwListen', 'gwUpstream', 'gwStartedAt', 'gwRestart']) {
+    assert.ok(statusTexts.includes(key), `status card shows ${key}`)
+  }
+  assert.ok(statusTexts.some((x) => String(x).includes('19843')), 'bound port visible')
+
+  const certs = GatewayCertsCard({ info, __t: (k) => k, flash: () => {}, reload: () => {}, onAdd: () => {} })
+  const certTexts = textsOf(certs)
+  for (const key of ['gwCertsTitle', 'gwOriginAuto', 'gwOriginCustom', 'gwAddCert', 'gwRegen', 'actionDelete']) {
+    assert.ok(certTexts.includes(key), `cert table shows ${key}`)
+  }
+  assert.ok(!certTexts.includes('gwDefaultSite'), 'no fallback badge — the fallback IS the auto row, the badge was redundant')
+  assert.ok(certTexts.includes('ui.example.com'), 'upload hosts render even before the listener reloads')
+
+  assert.equal(phaseLabelKey('running'), 'gwPhaseRunning')
+  assert.equal(phaseLabelKey('bogus'), 'gwPhaseStopped', 'unknown phase falls back to stopped')
+  assert.match(phaseBadgeClass('running'), /um-badge-ok/)
+  assert.match(phaseBadgeClass('error'), /um-badge-err/)
+})
+
+test('gateway tab renders loading shell; degrade states are distinguishable', () => {
+  const { GatewayTab, ZH, EN } = plugin.__internals
+  // loading shell renders; the degrade branches are driven by fetch errors in
+  // the browser — here we pin that all three states have honest copy in both
+  // dictionaries (a bare "unavailable" sent gateway users down the wrong path).
+  const el = GatewayTab({ __t: (k) => k, flash: () => {} })
+  assert.ok(el, 'renders a shell while /gateway/status is in flight')
+  for (const dict of [ZH, EN]) {
+    assert.ok(dict.gwMismatch.includes('404'), '404 -> mismatch hint (old gateway process / not via gateway)')
+    assert.ok(/重启 dsh web|restart dsh web/i.test(dict.gwMismatch), 'mismatch hint names the fix: restart dsh web')
+    assert.ok(dict.gwUnavailable, 'network failure -> unavailable note kept')
+  }
+})
+
+test('sansFromAltName extracts DNS entries only', () => {
+  const { sansFromAltName } = plugin.__internals
+  assert.deepEqual(
+    sansFromAltName('DNS:dsh.example.com, DNS:*.files.example.com, IP Address:1.2.3.4'),
+    ['dsh.example.com', '*.files.example.com'])
+  assert.deepEqual(sansFromAltName(''), [])
+  assert.deepEqual(sansFromAltName(undefined), [])
+})
+
+test('add-certificate dialog carries name/hosts/cert/key fields and actions', () => {
+  const { AddCertDialog } = plugin.__internals
+  const el = AddCertDialog({ onClose: () => {}, flash: () => {}, reload: () => {}, __t: (k) => k })
+  assert.ok(el, 'dialog renders')
+  const fields = { textareas: 0, inputs: 0, buttons: 0 }
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return
+    // shim keeps children in node.kids; components read props.children
+    if (typeof node.type === 'function') { walk(node.type({ ...node.props, children: node.kids })); return }
+    if (node.type === 'textarea') fields.textareas += 1
+    if (node.type === 'input') fields.inputs += 1
+    if (node.type === 'button') fields.buttons += 1
+    for (const kid of node.kids || []) walk(kid)
+  }
+  walk(el)
+  assert.equal(fields.textareas, 3, 'hosts + cert PEM + key PEM')
+  assert.equal(fields.inputs, 1, 'name input')
+  assert.ok(fields.buttons >= 3, 'close + inspect + save')
 })

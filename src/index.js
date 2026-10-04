@@ -43,6 +43,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import fsP from 'node:fs/promises'
 import { join } from 'node:path'
 import { networkInterfaces, homedir } from 'node:os'
 import { request as httpsRequest } from 'node:https'
@@ -80,6 +81,7 @@ import {
 } from './gate.js'
 import { renderLoginPage } from './login-page.js'
 import { createGateway } from './gateway-core.js'
+import { createCertStore, inspectCertPair, CertStoreError } from './cert-store.js'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
@@ -140,13 +142,13 @@ function sendJson(res, status, payload, extraHeaders) {
   res.end(JSON.stringify(payload))
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((fulfil, reject) => {
     let size = 0
     const chunks = []
     req.on('data', (chunk) => {
       size += chunk.length
-      if (size > MAX_BODY_BYTES) { reject(new Error('request body too large')); req.destroy(); return }
+      if (size > maxBytes) { reject(new Error(`request body too large (limit ${maxBytes} bytes)`)); req.destroy(); return }
       chunks.push(chunk)
     })
     req.on('end', () => {
@@ -158,8 +160,8 @@ function readJsonBody(req) {
 }
 
 // Secure because the gateway is HTTPS-only now (the shared-server HTTP gate is gone).
-function sessionCookie(token) {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${SESSION_TTL_SECONDS}`
+function sessionCookie(token, ttlSeconds = SESSION_TTL_SECONDS) {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${ttlSeconds}`
 }
 
 function clearedCookie() {
@@ -195,6 +197,12 @@ async function handleApi(req, res, deps) {
   const { store } = deps
   const apiPath = path.startsWith(`${API_PREFIX}/`) ? path.slice(API_PREFIX.length) : path
 
+  // Config-driven knobs (maxBodyBytes / sessionDays), read per request so a
+  // settings save applies without a restart; bare harnesses (old tests) fall
+  // back to the module constants.
+  const readBody = () => readJsonBody(req, typeof deps.maxBodyBytes === 'function' ? deps.maxBodyBytes() : MAX_BODY_BYTES)
+  const cookieFor = (token) => sessionCookie(token, typeof deps.sessionTtlSeconds === 'function' ? deps.sessionTtlSeconds() : SESSION_TTL_SECONDS)
+
   const authed = async () => {
     const cookies = parseCookies(req.headers && req.headers.cookie)
     return store.resolveSession(cookies[SESSION_COOKIE])
@@ -211,7 +219,7 @@ async function handleApi(req, res, deps) {
   // ── anonymous endpoints ──────────────────────────────────────────────────
 
   if (apiPath === '/login' && method === 'POST') {
-    const body = await readJsonBody(req)
+    const body = await readBody()
     const username = typeof body.username === 'string' ? body.username.trim() : ''
     const outcome = await store.checkLogin(username, body.password)
     if (outcome.result === 'invalid') {
@@ -228,7 +236,7 @@ async function handleApi(req, res, deps) {
     // wrong code never discloses whether the account has TOTP to a caller who
     // doesn't hold valid credentials).
     if (user.totpSecret) {
-      const guard = deps.otpGuard || (deps.otpGuard = createOtpGuard())
+      const guard = deps.otpGuard || (deps.otpGuard = createOtpGuard(deps.otpGuardOptions ? deps.otpGuardOptions() : {}))
       const lockedFor = guard.locked(username)
       if (lockedFor > 0) {
         await store.appendActivity({ type: 'login_failed', username, userId: user.id, ip: deps.clientIp(req), detail: 'totp attempts locked' })
@@ -249,11 +257,11 @@ async function handleApi(req, res, deps) {
     const { token } = await store.createSession(user)
     await store.touchLogin(user)
     await store.appendActivity({ type: 'login', username: user.username, userId: user.id, ip: deps.clientIp(req) })
-    return sendJson(res, 200, { user: store.publicUser(user) }, { 'set-cookie': sessionCookie(token) })
+    return sendJson(res, 200, { user: store.publicUser(user) }, { 'set-cookie': cookieFor(token) })
   }
 
   if (apiPath === '/register' && method === 'POST') {
-    const body = await readJsonBody(req)
+    const body = await readBody()
     const username = typeof body.username === 'string' ? body.username.trim() : ''
     const role = store.roleForNextRegistration()
     // Approval mode (autoActivate off, the default): every self-registration
@@ -273,7 +281,7 @@ async function handleApi(req, res, deps) {
       const { token } = await store.createSession(user)
       await store.touchLogin(user)
       await store.appendActivity({ type: 'register', username: created.username, userId: created.id, ip: deps.clientIp(req), detail: `role=${role}` })
-      return sendJson(res, 200, { user: created }, { 'set-cookie': sessionCookie(token) })
+      return sendJson(res, 200, { user: created }, { 'set-cookie': cookieFor(token) })
     } catch (error) {
       if (error instanceof StoreError) return sendJson(res, statusForStoreError(error), { error: error.message })
       throw error
@@ -299,7 +307,7 @@ async function handleApi(req, res, deps) {
   if (apiPath === '/me/password' && method === 'POST') {
     const session = await authed()
     if (!session) return sendJson(res, 401, { error: '未登录' })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     const ok = await store.verifyLogin(session.user.username, body.oldPassword)
     if (!ok) return sendJson(res, 400, { error: '当前密码不正确' })
     try {
@@ -334,7 +342,7 @@ async function handleApi(req, res, deps) {
   if (apiPath === '/me/totp/activate' && method === 'POST') {
     const session = await authed()
     if (!session) return sendJson(res, 401, { error: '未登录' })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     let activated = false
     try {
       activated = await store.activateTotp(session.user, body.code)
@@ -353,7 +361,7 @@ async function handleApi(req, res, deps) {
   if (apiPath === '/me/totp/disable' && method === 'POST') {
     const session = await authed()
     if (!session) return sendJson(res, 401, { error: '未登录' })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     const ok = await store.verifyLogin(session.user.username, body.password)
     if (!ok) return sendJson(res, 400, { error: '登录密码不正确' })
     try {
@@ -443,7 +451,7 @@ async function handleApi(req, res, deps) {
   if (apiPath === '/bans' && method === 'POST') {
     const admin = await requireAdmin()
     if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
     if (ip === deps.clientIp(req)) return sendJson(res, 400, { error: '不能封禁当前正在使用的 IP' })
     try {
@@ -476,7 +484,7 @@ async function handleApi(req, res, deps) {
   if (apiPath === '/users' && method === 'POST') {
     const admin = await requireAdmin()
     if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     try {
       const created = await store.createUser({ username: body.username, password: body.password, role: body.role || 'user' })
       await store.appendActivity({ type: 'user_created', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `created=${created.username} role=${created.role}` })
@@ -494,7 +502,7 @@ async function handleApi(req, res, deps) {
     const target = store.findUser(disableMatch[1])
     if (!target) return sendJson(res, 404, { error: '用户不存在' })
     if (target.id === admin.session.user.id) return sendJson(res, 403, { error: '不能禁用自己的账号' })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     const disabled = !!body.disabled
     try {
       await store.setDisabled(target, disabled)
@@ -566,7 +574,7 @@ async function handleApi(req, res, deps) {
     const target = store.findUser(adminMatch[1])
     if (!target) return sendJson(res, 404, { error: '用户不存在' })
     if (target.id === admin.session.user.id) return sendJson(res, 403, { error: '不能修改自己的角色' })
-    const body = await readJsonBody(req)
+    const body = await readBody()
     try {
       await store.setRole(target, body.role)
     } catch (error) {
@@ -576,6 +584,85 @@ async function handleApi(req, res, deps) {
     await store.dropUserSessions(target.id)
     await store.appendActivity({ type: 'role_change', username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req), detail: `target=${target.username} role=${target.role}` })
     return sendJson(res, 200, { user: store.publicUser(target) })
+  }
+
+  // ── admin-only gateway / HTTPS certificate management ────────────────────
+  // Mechanics live in deps.gateway (createGatewayManager); this section owns
+  // auth, activity-ledger entries and error mapping. Without deps.gateway
+  // (bare harnesses, loopback access without the gateway) these 404 like any
+  // unknown path, and the UI hides itself the same way CertCard does.
+
+  if (apiPath === '/gateway/status' && method === 'GET') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    if (!deps.gateway) return sendJson(res, 404, { error: 'not found' })
+    return sendJson(res, 200, await deps.gateway.status())
+  }
+
+  if (apiPath === '/gateway/certs' && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    if (!deps.gateway) return sendJson(res, 404, { error: 'not found' })
+    const body = await readBody()
+    let outcome
+    try {
+      outcome = await deps.gateway.addCert({
+        name: body.name, hosts: body.hosts, cert: body.cert, key: body.key,
+        dryRun: body.dryRun === true,
+        by: admin.session.user.username,
+      })
+    } catch (error) {
+      if (error instanceof CertStoreError) return sendJson(res, 400, { error: error.message })
+      throw error
+    }
+    if (!outcome.dryRun) {
+      await store.appendActivity({
+        type: 'gateway_cert_add',
+        username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req),
+        detail: `cert=${outcome.cert.name} hosts=${outcome.cert.hosts.join(',')}`,
+      })
+    }
+    return sendJson(res, 200, outcome)
+  }
+
+  const gwCertMatch = /^\/gateway\/certs\/([A-Za-z0-9_-]+)$/.exec(apiPath)
+  if (gwCertMatch && method === 'DELETE') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    if (!deps.gateway) return sendJson(res, 404, { error: 'not found' })
+    const removed = await deps.gateway.removeCert(gwCertMatch[1])
+    if (!removed) return sendJson(res, 404, { error: '证书不存在' })
+    await store.appendActivity({
+      type: 'gateway_cert_remove',
+      username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req),
+      detail: `id=${gwCertMatch[1]}`,
+    })
+    return sendJson(res, 200, { ok: true })
+  }
+
+  if (apiPath === '/gateway/certs/regenerate' && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    if (!deps.gateway) return sendJson(res, 404, { error: 'not found' })
+    const outcome = await deps.gateway.regenerateSelfSigned()
+    await store.appendActivity({
+      type: 'gateway_cert_regen',
+      username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req),
+      detail: `removed=${outcome.removed}`,
+    })
+    return sendJson(res, 200, outcome)
+  }
+
+  if (apiPath === '/gateway/restart' && method === 'POST') {
+    const admin = await requireAdmin()
+    if (!admin.ok) return sendJson(res, admin.status, { error: admin.message })
+    if (!deps.gateway) return sendJson(res, 404, { error: 'not found' })
+    await store.appendActivity({
+      type: 'gateway_restart',
+      username: admin.session.user.username, userId: admin.session.user.id, ip: deps.clientIp(req),
+    })
+    void deps.gateway.restart()
+    return sendJson(res, 200, { ok: true, restarting: true })
   }
 
   return sendJson(res, 404, { error: 'not found' })
@@ -601,9 +688,10 @@ const Config = z && typeof z.object === 'function' ? z.object({
     .default([]) // empty = auto-enumerate all local IPs (see allLocalIPs)
     .volatile(),
   title: z.string().default('DSH 控制台').volatile(),
-  // Reserved (accepted, not wired): the store owns session lifetime, login
-  // failure is not auto-locked (admins set IP bans instead), and handleApi
-  // owns its own body-size cap. Kept for the settings card + forward use.
+  // sessionDays owns session lifetime (store sliding TTL + cookie Max-Age),
+  // loginFailLimit/lockoutSeconds pace the TOTP brute-force guard, and
+  // maxBodyBytes caps API JSON bodies (cert uploads included) — all read
+  // per request/重建 so settings saves apply without a restart.
   sessionDays: z.natural().min(1).default(7).volatile(),
   loginFailLimit: z.natural().min(1).default(5).volatile(),
   lockoutSeconds: z.natural().min(1).default(60).volatile(),
@@ -669,14 +757,19 @@ function autoSiteHosts(ips) {
  * dropping every local IP + alias and breaking local / LAN / Tailscale
  * access with 421 (unknown host) the moment a user added any site.
  */
-function resolveSites(cfg, autoIps) {
+function resolveSites(cfg, autoIps, customSites = []) {
   const configured = (cfg && cfg.sites && cfg.sites.length) ? cfg.sites : []
   const extraHosts = configured
     .filter((s) => !s.cert && !s.key)
     .flatMap((s) => s.hosts || [])
   const mergedHosts = [...new Set([...autoSiteHosts(autoIps), ...extraHosts])]
   const domainSites = configured.filter((s) => s.cert || s.key)
-  return [{ hosts: mergedHosts, cert: '', key: '' }, ...domainSites]
+  // Custom sites (UI-managed cert store) come last: SNI picks the FIRST
+  // matching context, so auto/settings sites keep precedence for any host
+  // they also cover (the cert store refuses duplicate hosts among its own
+  // entries; overlap with the auto list is intentional — local names stay
+  // on the self-signed cert).
+  return [{ hosts: mergedHosts, cert: '', key: '' }, ...domainSites, ...customSites]
 }
 
 /**
@@ -690,6 +783,75 @@ function resolveSites(cfg, autoIps) {
  */
 function emptyUsersGuard() {
   return null
+}
+
+/**
+ * Mechanics behind the /gateway/* management endpoints — certificate
+ * persistence, self-signed regeneration and listener rebuilds. Factored out
+ * of apply() so tests can drive the management API against a real temp dir
+ * without a live listener. Endpoints (handleApi) own auth + activity
+ * entries; this object owns state changes and NEVER awaits the rebuild
+ * inside the request path: a sites change restarts the listener, which
+ * tears down the very connection the response would travel on — the UI
+ * polls /gateway/status instead.
+ *
+ * lifecycle: () => the status payload core (phase/port/upstream/sites…);
+ *            called per status() so restarts are reflected live.
+ * rebuild:   (force) => queueRebuild — fire-and-forget from here.
+ */
+function createGatewayManager({ certStore, certsDir, lifecycle, rebuild }) {
+  /** Public (keyless) view of a stored custom cert. */
+  const publicCert = (it) => ({
+    id: it.id,
+    name: it.name,
+    hosts: it.hosts || [],
+    fingerprint: it.fingerprint || '',
+    notAfter: it.notAfter || '',
+    subject: it.subject || '',
+    expired: it.expired === true,
+    createdAt: it.createdAt,
+    createdBy: it.createdBy || '',
+  })
+  return {
+    async status() {
+      const base = (typeof lifecycle === 'function' ? lifecycle() : lifecycle) || {}
+      let customCerts = []
+      try { customCerts = (await certStore.list()).map(publicCert) } catch { /* unreadable store -> report without certs */ }
+      return { ...base, sites: base.sites || [], customCerts }
+    },
+    /** dryRun validates + inspects without persisting (the UI's 检测 step). */
+    async addCert({ name, hosts, cert, key, dryRun, by } = {}) {
+      const verdict = inspectCertPair(cert, key)
+      if (!verdict.ok) throw new CertStoreError('bad_pair', verdict.error)
+      if (dryRun) return { ok: true, dryRun: true, info: verdict.info }
+      const record = await certStore.add({ name, hosts, cert, key, by })
+      void rebuild(true)
+      return { ok: true, cert: record, info: verdict.info }
+    },
+    async removeCert(id) {
+      const removed = await certStore.remove(id)
+      if (removed) void rebuild(true)
+      return removed
+    },
+    /** Delete the auto-generated pairs in the certsDir ROOT (uploads live in
+     *  certs/custom/, untouched) so certs.js reissues the self-signed cert
+     *  with the current host list on the next build. */
+    async regenerateSelfSigned() {
+      let removed = 0
+      try {
+        for (const name of await fsP.readdir(certsDir)) {
+          if (!/\.(crt|key)$/.test(name)) continue
+          try { await fsP.rm(join(certsDir, name), { force: true }); removed += 1 } catch { /* best effort */ }
+        }
+      } catch { /* missing dir -> nothing to remove */ }
+      void rebuild(true)
+      return { ok: true, removed }
+    },
+    async restart() {
+      void rebuild(true)
+      return { ok: true }
+    },
+  }
 }
 
 /**
@@ -779,16 +941,57 @@ const plugin = {
     resolveSites,
     createOtpGuard,
     totpQrSvg,
+    createGatewayManager,
   },
   apply(ctx, config = {}) {
     const pluginName = 'user-management'
-    const store = createStore({ home: dshHome() })
+
+    // ── resolved config: composition config + live settings document ──────
+    // 0.1.7：settings 文档里的实时 volatile 值（事件驱动刷新）。放在 apply 最前，
+    // 会话 TTL / body 上限 / OTP 防爆破等 per-request 配置读它，保存即生效。
+    let liveSettings = {}
+    const resolvedConfig = () => ({ ...config, ...liveSettings })
+    // 0.1.7：读取本命名空间在 settings 文档里的实时值（describe 投影后的 volatile
+    // 字段）。settings 服务缺席时返回 {}，resolvedConfig 退回 composition config。
+    const readLiveSettings = () => {
+      try {
+        if (!ctx.settings || typeof ctx.settings.describe !== 'function') return {}
+        const d = ctx.settings.describe().find((x) => x.ns === 'user-management')
+        return d && d.value ? d.value : {}
+      } catch {
+        return {}
+      }
+    }
+    // sessionDays（天）→ 会话 TTL 秒；Cookie Max-Age 与 store 的 sliding TTL
+    // 都读它，≤0 / 非数字回退 7 天。
+    const sessionTtlSeconds = () => {
+      const days = Number(resolvedConfig().sessionDays)
+      return Number.isFinite(days) && days >= 1 ? Math.floor(days) * 86_400 : SESSION_TTL_SECONDS
+    }
+    // maxBodyBytes（API JSON 体积上限）；证书上传的 PEM 也走这里，配太小会
+    // 拒绝 fullchain + 私钥（默认 16KB 足够常见证书对）。
+    const maxBodyBytes = () => {
+      const value = Number(resolvedConfig().maxBodyBytes)
+      return Number.isFinite(value) && value >= 1024 ? Math.floor(value) : MAX_BODY_BYTES
+    }
+    // TOTP 防爆破：连续错 loginFailLimit 次锁 lockoutSeconds 秒。
+    const otpGuardOptions = () => {
+      const cfg = resolvedConfig()
+      const limit = Number(cfg.loginFailLimit)
+      const seconds = Number(cfg.lockoutSeconds)
+      return {
+        limit: Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : OTP_FAIL_LIMIT,
+        lockoutMs: Number.isFinite(seconds) && seconds >= 1 ? Math.floor(seconds) * 1000 : OTP_LOCKOUT_MS,
+      }
+    }
+
+    const store = createStore({ home: dshHome(), sessionTtlMs: () => sessionTtlSeconds() * 1000 })
     const ready = store.load().catch((error) => {
       console.error(`[${pluginName}] store load failed:`, error && error.message)
       throw error
     })
     const clientIp = (req) => normalizeIp(req.socket && req.socket.remoteAddress)
-    const deps = { store, clientIp }
+    const deps = { store, clientIp, sessionTtlSeconds, maxBodyBytes, otpGuardOptions }
 
     // Identity service for sibling plugins (see createIdentityService).
     ctx.provide('user-management', createIdentityService({ store, ready }))
@@ -796,6 +999,14 @@ const plugin = {
 
     const dataDir = join(dshHome(), 'user-management')
     const certsDir = join(dataDir, 'certs')
+    // UI-managed certificates (settings panel) persist under certs/custom/ —
+    // the auto-generated self-signed pairs stay in the certsDir root, which
+    // is what "regenerate self-signed" deletes.
+    const certStore = createCertStore({ dir: join(certsDir, 'custom') })
+    const certStoreReady = certStore.load().catch((error) => {
+      warn(`user-management: custom cert store unavailable — UI-managed certificates disabled — ${error && error.message}`)
+      return null
+    })
 
     const log = (msg) => console.log(`[${pluginName}] ${msg}`)
     const warn = (msg) => console.warn(`[${pluginName}] ${msg}`)
@@ -878,7 +1089,6 @@ const plugin = {
     }
 
     // ── gateway lifecycle: hot-reload (bind-then-swap) + self-heal ────────
-    let liveSettings = {} // 0.1.7：settings 文档里的实时 volatile 值（事件驱动刷新）
     let current = null
     let currentOptions = null
     let startedAt = null
@@ -886,26 +1096,39 @@ const plugin = {
     let lastOnErrorAt = 0
     let restarting = false
     let rebuildChain = Promise.resolve()
-    const resolvedConfig = () => ({ ...config, ...liveSettings })
-    // 0.1.7：读取本命名空间在 settings 文档里的实时值（describe 投影后的 volatile
-    // 字段）。settings 服务缺席时返回 {}，resolvedConfig 退回 composition config。
-    const readLiveSettings = () => {
-      try {
-        if (!ctx.settings || typeof ctx.settings.describe !== 'function') return {}
-        const d = ctx.settings.describe().find((x) => x.ns === 'user-management')
-        return d && d.value ? d.value : {}
-      } catch {
-        return {}
-      }
-    }
     // Registration approval switch, read per request so settings hot-reload applies.
     deps.autoActivate = () => resolvedConfig().autoActivate === true
+    /** Shared status projection (panel route + gateway management UI). */
+    const currentPhase = (cfg) =>
+      cfg.enabled === false ? 'disabled' : restarting ? 'restarting' : current ? 'running' : lastError ? 'error' : 'stopped'
+    const gatewayLifecycle = () => {
+      const cfg = resolvedConfig()
+      return {
+        version: pkg.version,
+        enabled: cfg.enabled !== false,
+        phase: currentPhase(cfg),
+        startedAt,
+        lastError,
+        restarting,
+        listenHost: cfg.listenHost,
+        port: (current && current.port) || cfg.port,
+        upstream: currentOptions ? currentOptions.upstream : resolveUpstream(cfg),
+        // Per-site cert details from the LIVE listener; empty while stopped.
+        sites: current ? current.describeSites() : [],
+        users: store.listUsers().length,
+      }
+    }
+    deps.gateway = createGatewayManager({ certStore, certsDir, lifecycle: gatewayLifecycle, rebuild: (force) => queueRebuild(force) })
 
     const queueRebuild = (force = false) => {
       rebuildChain = rebuildChain
         .then(async () => {
           await ready
           const cfg = resolvedConfig()
+          // TOTP brute-force pacing follows the current settings; recreating
+          // the guard resets its in-memory counters (a restart clears them
+          // too — this guard was never persistent).
+          deps.otpGuard = createOtpGuard(otpGuardOptions())
           if (cfg.enabled === false) {
             if (current) log('user-management: disabled — listener stopped')
             restarting = false
@@ -924,7 +1147,11 @@ const plugin = {
           // the local NICs can't see, e.g. a NAT'd public IP); configured
           // sites WITH cert/key stay independent SNI sites (real domain
           // certs). Empty cfg.sites = pure auto (zero-config default).
-          const sites = resolveSites(cfg, allLocalIPs())
+          // v0.10: UI-managed custom certs (cert store, certs/custom/) are
+          // appended as additional SNI sites — lowest precedence, so auto and
+          // settings sites keep the hosts they cover.
+          await certStoreReady
+          const sites = resolveSites(cfg, allLocalIPs(), await certStore.listSites())
           const options = {
             listenHost: cfg.listenHost,
             port: cfg.port,
@@ -1064,6 +1291,8 @@ const plugin = {
     }
 
     // ── /user-management/panel — admin-only status (reached via the gateway proxy) ─
+    // Same projection the gateway's /gateway/status serves; kept for tools
+    // hitting the loopback dsh web directly.
     ctx.effect(() => ctx.webServer.register({
       kind: 'prefix',
       path: '/user-management/panel',
@@ -1074,19 +1303,7 @@ const plugin = {
         const cookies = parseCookies(req.headers && req.headers.cookie)
         const session = await store.resolveSession(cookies[SESSION_COOKIE])
         if (!session || session.user.role !== 'admin') return sendJson(res, 403, { error: '需要管理员权限' })
-        const cfg = resolvedConfig()
-        const phase = cfg.enabled === false ? 'disabled' : restarting ? 'restarting' : current ? 'running' : lastError ? 'error' : 'stopped'
-        return sendJson(res, 200, {
-          version: pkg.version,
-          enabled: cfg.enabled !== false,
-          phase,
-          startedAt,
-          lastError,
-          listenHost: cfg.listenHost,
-          port: (current && current.port) || cfg.port,
-          sites: (cfg.sites || []).map((s) => ({ hosts: s.hosts || [], cert: s.cert ? 'file' : 'auto' })),
-          users: store.listUsers().length,
-        })
+        return sendJson(res, 200, gatewayLifecycle())
       },
     }), `${pluginName}: panel route`)
 
